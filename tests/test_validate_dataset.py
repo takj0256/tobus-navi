@@ -7,7 +7,7 @@ from tools.validate_dataset import validate_dataset_file
 
 
 class ValidateDatasetTest(unittest.TestCase):
-    def make_dataset(self, *, demo=False, schema=4, groups=True, route_file=True):
+    def make_dataset(self, *, demo=False, schema=5, groups=True, route_file=True):
         temp_dir = tempfile.TemporaryDirectory()
         self.addCleanup(temp_dir.cleanup)
         root = Path(temp_dir.name)

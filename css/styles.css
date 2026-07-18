@@ -545,3 +545,104 @@ footer p { margin-bottom: .35rem; }
 .realtime-error code {
   overflow-wrap: anywhere;
 }
+
+/* Phase 6: station-first grouped stop cards */
+.stop-destination-summary {
+  margin: .42rem 0 0;
+  color: var(--muted);
+  font-size: .88rem;
+  line-height: 1.55;
+}
+.stop-platform-details {
+  border-top: 1px solid var(--border);
+  background: #f8fafc;
+}
+.stop-platform-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: .75rem;
+  min-height: 58px;
+  padding: .75rem .95rem;
+  cursor: pointer;
+  list-style: none;
+  color: var(--primary-dark);
+  background: #f3f8fc;
+  font-weight: 850;
+}
+.stop-platform-summary::-webkit-details-marker { display: none; }
+.stop-platform-summary::after {
+  content: "＋";
+  order: 3;
+  flex: 0 0 auto;
+  font-size: 1.25rem;
+  color: var(--primary);
+}
+.stop-platform-details[open] .stop-platform-summary::after { content: "−"; }
+.stop-platform-summary .open-label { display: none; }
+.stop-platform-details[open] .stop-platform-summary .closed-label { display: none; }
+.stop-platform-details[open] .stop-platform-summary .open-label { display: inline; }
+.summary-count {
+  margin-left: auto;
+  padding: .22rem .52rem;
+  border-radius: 999px;
+  color: var(--muted);
+  background: #fff;
+  font-size: .76rem;
+  font-weight: 750;
+}
+.platform-list.platform-tree,
+.platform-list.single-platform-list {
+  gap: 0;
+  padding: .35rem .8rem .75rem;
+  border-top: 1px solid var(--border);
+  background: #fff;
+}
+.stop-platform-details .platform-list.platform-tree { border-top: 1px solid var(--border); }
+.platform-panel {
+  position: relative;
+  overflow: visible;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+.platform-panel + .platform-panel { border-top: 1px dashed var(--border); }
+.platform-heading {
+  padding: .8rem .25rem .55rem;
+  background: transparent;
+}
+.platform-heading-main {
+  display: flex;
+  align-items: flex-start;
+  gap: .45rem;
+  min-width: 0;
+}
+.platform-tree-glyph {
+  flex: 0 0 auto;
+  color: var(--primary);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 1.15rem;
+  font-weight: 800;
+  line-height: 1.25;
+}
+.platform-heading-main strong { font-size: .98rem; }
+.platform-heading-main p {
+  margin-top: .24rem;
+  line-height: 1.45;
+}
+.platform-panel .route-list {
+  margin-left: 1.55rem;
+  padding: .2rem .25rem .8rem;
+  border-top: 0;
+}
+.single-platform-list .platform-tree-glyph { display: none; }
+.single-platform-list .platform-panel .route-list { margin-left: 0; }
+
+@media (max-width: 520px) {
+  .stop-platform-summary { padding-inline: .8rem; }
+  .platform-list.platform-tree,
+  .platform-list.single-platform-list { padding-inline: .55rem; }
+  .platform-heading { display: flex; }
+  .platform-count { margin-top: 0; }
+  .platform-panel .route-list { margin-left: 1.1rem; }
+}

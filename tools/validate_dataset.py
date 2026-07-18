@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""GitHub Pages公開前にPhase 4正式データを検証する。"""
+"""GitHub Pages公開前にPhase 6正式データを検証する。"""
 from __future__ import annotations
 
 import argparse
@@ -18,11 +18,11 @@ def validate_dataset_file(path: Path) -> tuple[int, int, int, str]:
         raise ValueError(f"{path} を読み込めません: {exc}") from exc
 
     if not isinstance(dataset, dict) or not isinstance(dataset.get("stop_groups"), list):
-        raise ValueError("Phase 4の停留所グループデータ形式ではありません。")
+        raise ValueError("Phase 6の停留所グループデータ形式ではありません。")
     meta = dataset.get("meta", {})
     if meta.get("demo") is True:
         raise ValueError("デモデータは正式公開できません。")
-    if int(meta.get("schema_version", 0)) < 4:
+    if int(meta.get("schema_version", 0)) < 5:
         raise ValueError("データが旧形式です。convert_gtfs.pyで再生成してください。")
     if not dataset["stop_groups"]:
         raise ValueError("停留所データが空です。")
@@ -51,7 +51,7 @@ def validate_dataset_file(path: Path) -> tuple[int, int, int, str]:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="正式な都バスPhase 4データを検証します。")
+    parser = argparse.ArgumentParser(description="正式な都バスPhase 6データを検証します。")
     parser.add_argument(
         "path",
         nargs="?",

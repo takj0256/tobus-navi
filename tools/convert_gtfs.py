@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""GTFS/GTFS-JPを都バスナビ Phase 4 用データへ変換する。
+"""GTFS/GTFS-JPを都バスナビ Phase 6 用データへ変換する。
 
 出力:
   data/transit-index.json      停留所グループ・系統索引
@@ -15,8 +15,10 @@ import hashlib
 import io
 import json
 import math
+import re
 import shutil
 import sys
+import unicodedata
 import zipfile
 from collections import defaultdict
 from contextlib import contextmanager
@@ -122,6 +124,27 @@ def normalize_headsign(value: str) -> str:
     return value.strip() or "行き先不明"
 
 
+def normalize_platform_label(platform_code: str, child_name: str, parent_name: str) -> str:
+    """GTFSのplatform_codeまたは子停留所名から、利用者向けのりば表記を作る。"""
+    value = (platform_code or "").strip()
+    if not value and child_name and child_name != parent_name:
+        value = child_name.strip()
+    if not value:
+        return ""
+    if re.fullmatch(r"[0-9０-９]+", value):
+        return f"{value}番のりば"
+    if re.fullmatch(r"[0-9０-９]+番", value):
+        return f"{value}のりば"
+    return value
+
+
+def platform_sort_key(platform: dict) -> tuple:
+    value = unicodedata.normalize("NFKC", str(platform.get("platform_code", "")))
+    match = re.match(r"^(\d+)", value)
+    if match:
+        return (0, int(match.group(1)), value, platform.get("stop_id", ""))
+    return (1, value, platform.get("stop_id", ""))
+
 
 def cluster_same_name_platforms(platforms: list[dict], threshold_km: float = 0.5) -> list[list[dict]]:
     """同名停留所を近接クラスタへ分け、別地域の同名停留所を誤結合しない。"""
@@ -215,8 +238,17 @@ def build_dataset(
         trips[trip_id] = trip
         route_trip_ids[route_id].append(trip_id)
 
+    # location_type=1 の親停留所を先に読み込み、子のりばの表示名へ反映する。
+    raw_stops = list(read_csv(source, "stops.txt"))
+    parent_stations: dict[str, dict[str, str]] = {}
+    for row in raw_stops:
+        stop_id = row.get("stop_id", "")
+        location_type = row.get("location_type", "0") or "0"
+        if stop_id and location_type == "1":
+            parent_stations[stop_id] = row
+
     stops: dict[str, dict] = {}
-    for row in read_csv(source, "stops.txt"):
+    for row in raw_stops:
         stop_id = row.get("stop_id", "")
         if not stop_id:
             continue
@@ -231,11 +263,32 @@ def build_dataset(
         if center_lat is not None and center_lon is not None and radius_km is not None:
             if haversine_km(center_lat, center_lon, lat, lon) > radius_km:
                 continue
+
+        parent_station_id = row.get("parent_station", "")
+        parent = parent_stations.get(parent_station_id, {})
+        child_name = row.get("stop_name") or stop_id
+        parent_name = parent.get("stop_name", "")
+        display_name = parent_name or child_name
+        display_kana = (
+            parent.get("stop_name_kana")
+            or parent.get("stop_name_ja-Hrkt")
+            or row.get("stop_name_kana")
+            or row.get("stop_name_ja-Hrkt")
+            or ""
+        )
+        platform_label = normalize_platform_label(
+            row.get("platform_code", ""),
+            child_name,
+            display_name,
+        )
+
         stops[stop_id] = {
             "stop_id": stop_id,
-            "stop_name": row.get("stop_name") or stop_id,
-            "stop_name_kana": row.get("stop_name_kana") or row.get("stop_name_ja-Hrkt") or "",
-            "platform_code": row.get("platform_code", ""),
+            "stop_name": display_name,
+            "raw_stop_name": child_name,
+            "stop_name_kana": display_kana,
+            "platform_code": platform_label,
+            "parent_station_id": parent_station_id,
             "lat": lat,
             "lon": lon,
         }
@@ -282,6 +335,9 @@ def build_dataset(
 
     calendars, exceptions = load_calendars(source)
 
+    # parent_station がある場合は親IDを最優先で一つの停留所カードにまとめる。
+    # 親IDがない停留所は従来どおり同名＋近接距離でクラスタ化する。
+    groups_by_parent: dict[str, list[dict]] = defaultdict(list)
     groups_by_name: dict[str, list[dict]] = defaultdict(list)
     for stop in stops.values():
         route_values = platform_routes.get(stop["stop_id"], set())
@@ -301,33 +357,45 @@ def build_dataset(
                 )
             ],
         }
-        groups_by_name[stop["stop_name"]].append(platform)
+        parent_station_id = stop.get("parent_station_id", "")
+        if parent_station_id:
+            groups_by_parent[parent_station_id].append(platform)
+        else:
+            groups_by_name[stop["stop_name"]].append(platform)
 
     stop_groups: list[dict] = []
+
+    def append_group(platforms: list[dict], group_seed_prefix: str) -> None:
+        platforms.sort(key=platform_sort_key)
+        lat = sum(item["lat"] for item in platforms) / len(platforms)
+        lon = sum(item["lon"] for item in platforms) / len(platforms)
+        stop_name = next((item["stop_name"] for item in platforms if item["stop_name"]), "停留所")
+        kana = next((item["stop_name_kana"] for item in platforms if item["stop_name_kana"]), "")
+        group_seed = group_seed_prefix + "|" + "|".join(sorted(item["stop_id"] for item in platforms))
+        stop_groups.append(
+            {
+                "group_id": stable_id("stop", group_seed),
+                "stop_name": stop_name,
+                "stop_name_kana": kana,
+                "lat": lat,
+                "lon": lon,
+                "platforms": platforms,
+            }
+        )
+
+    for parent_station_id, platforms in groups_by_parent.items():
+        append_group(platforms, f"parent:{parent_station_id}")
+
     for stop_name, same_name_platforms in groups_by_name.items():
-        for platforms in cluster_same_name_platforms(same_name_platforms):
-            platforms.sort(key=lambda item: (item["platform_code"], item["stop_id"]))
-            lat = sum(item["lat"] for item in platforms) / len(platforms)
-            lon = sum(item["lon"] for item in platforms) / len(platforms)
-            kana = next((item["stop_name_kana"] for item in platforms if item["stop_name_kana"]), "")
-            group_seed = "|".join(sorted(item["stop_id"] for item in platforms))
-            stop_groups.append(
-                {
-                    "group_id": stable_id("stop", group_seed),
-                    "stop_name": stop_name,
-                    "stop_name_kana": kana,
-                    "lat": lat,
-                    "lon": lon,
-                    "platforms": platforms,
-                }
-            )
+        for cluster_index, platforms in enumerate(cluster_same_name_platforms(same_name_platforms)):
+            append_group(platforms, f"name:{stop_name}:{cluster_index}")
 
     stop_groups.sort(key=lambda item: item["stop_name"])
     generated_at = datetime.now(timezone.utc).isoformat()
 
     index = {
         "meta": {
-            "schema_version": 4,
+            "schema_version": 5,
             "dataset_name": "都バスGTFS-JP正式データ",
             "generated_at": generated_at,
             "provider": "東京都交通局・公共交通オープンデータ協議会",
@@ -395,7 +463,7 @@ def build_dataset(
 
         route_files[route["route_file"]] = {
             "meta": {
-                "schema_version": 4,
+                "schema_version": 5,
                 "generated_at": generated_at,
                 "provider": index["meta"]["provider"],
                 "license": "CC BY 4.0",

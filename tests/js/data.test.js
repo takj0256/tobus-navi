@@ -40,12 +40,12 @@ test("全角英数字と空白を正規化する", () => {
   assert.equal(normalizeSearchText(" ＡＢＣ １２３ "), "abc123");
 });
 
-test("Phase 4正式データを受け入れる", () => {
-  assert.doesNotThrow(() => validateDataset({ meta: { demo: false, schema_version: 4 }, stop_groups: groups }));
+test("Phase 6正式データを受け入れる", () => {
+  assert.doesNotThrow(() => validateDataset({ meta: { demo: false, schema_version: 5 }, stop_groups: groups }));
 });
 
 test("デモ・旧形式・空データを拒否する", () => {
-  assert.throws(() => validateDataset({ meta: { demo: true, schema_version: 4 }, stop_groups: groups }), /デモ/);
+  assert.throws(() => validateDataset({ meta: { demo: true, schema_version: 5 }, stop_groups: groups }), /デモ/);
   assert.throws(() => validateDataset({ meta: { demo: false, schema_version: 2 }, stop_groups: groups }), /旧形式/);
-  assert.throws(() => validateDataset({ meta: { demo: false, schema_version: 4 }, stop_groups: [] }), /空/);
+  assert.throws(() => validateDataset({ meta: { demo: false, schema_version: 5 }, stop_groups: [] }), /空/);
 });

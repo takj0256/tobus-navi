@@ -1,25 +1,20 @@
-# 都バスナビ Phase 5
+# 都バスナビ Phase 6
 
-現在地周辺の同名停留所を1枚にまとめ、上り・下り、次の発車、時刻表、走行中の車両、後続停留所への推定到着時刻を表示するPWAです。
+現在地周辺の同名停留所を1枚にまとめ、のりば、行き先、次の発車、時刻表、走行中の車両、後続停留所への推定到着時刻を表示するPWAです。
 
-## Phase 5の変更
+## Phase 6の変更
 
-- 本日の全時刻表を初期状態では閉じ、タップした時だけ生成・表示
-- 「これからの発車予定」は常時表示
-- GTFS-RT取得を10秒でタイムアウト
-- 複数取得先の順次フォールバックに対応
-- 同一通信の重複実行を防止
-- 失敗回数に応じて40秒〜最大2分へ再試行間隔を調整
-- オフライン時は更新を停止し、通信復旧時に即時再取得
-- アプリがバックグラウンドの間は更新を停止し、復帰時に再取得
-- 90秒以上古いフィードを警告表示
-- 5分以上更新されていない車両を候補から除外
-- 取得元と最終更新時刻を画面表示
-- Cloudflare Workerに8秒タイムアウトと最大3分の障害時キャッシュを追加
+- GTFSの `parent_station` を利用し、「錦糸町駅前」などの親停留所名でのりばを統合
+- 子停留所名が `1`、`2` のような番号だけでも「1番のりば」として表示
+- 停留所カードの表面に代表的な行き先を常時表示
+- 複数のりばは初期状態で閉じ、「のりば・系統を表示」で展開
+- 展開後は `├ 1番のりば`、`└ 2番のりば` のような階層表示
+- お気に入り変更後も開いていた停留所カードの状態を維持
+- データ形式をschema version 5へ更新
 
-## GTFSデータ
+## 重要：GTFSの再生成
 
-Phase 4以降の形式を使用します。
+Phase 6は停留所の親子関係を利用するため、Phase 5以前のデータは使用できません。更新適用後に必ず再生成してください。
 
 ```bash
 ./tools/update_gtfs.sh ~/Downloads/ToeiBus-GTFS.zip
@@ -56,7 +51,7 @@ python3 tools/validate_dataset.py data/transit-index.json
 python3 tools/check_realtime.py
 ```
 
-Android Chromeから直接取得できない場合は、同梱のCloudflare Workerを公開します。
+Android Chromeから直接取得できない場合は、同梱のCloudflare Workerを利用できます。
 
 ```bash
 cd worker
@@ -70,13 +65,11 @@ npx wrangler deploy
 export const REALTIME_PROXY_ENDPOINT = "https://your-worker.workers.dev";
 ```
 
-Proxyを設定した場合はProxyを先に試し、失敗時にODPT公開配信へフォールバックします。
-
 ## GitHubへ反映
 
 ```bash
 git add .
-git commit -m "Make timetable collapsible and stabilize realtime updates"
+git commit -m "Group platforms under parent stops and add collapsible stop cards"
 git push
 ```
 

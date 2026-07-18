@@ -6,7 +6,7 @@ import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
-from convert_gtfs import build_dataset, haversine_km, parse_gtfs_time  # noqa: E402
+from convert_gtfs import build_dataset, haversine_km, normalize_platform_label, parse_gtfs_time, platform_sort_key  # noqa: E402
 
 
 class ConverterTest(unittest.TestCase):
@@ -14,10 +14,11 @@ class ConverterTest(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.path = Path(self.temp.name)
         (self.path / "stops.txt").write_text(
-            "stop_id,stop_name,stop_lat,stop_lon,platform_code\n"
-            "s1,試験駅前,35.0,139.0,1番のりば\n"
-            "s2,試験駅前,35.0002,139.0002,2番のりば\n"
-            "s3,終点駅,35.01,139.01,\n", encoding="utf-8")
+            "stop_id,stop_name,stop_lat,stop_lon,platform_code,location_type,parent_station\n"
+            "p1,試験駅前,35.0,139.0,,1,\n"
+            "s1,1,35.0,139.0,,0,p1\n"
+            "s2,2,35.0002,139.0002,,0,p1\n"
+            "s3,終点駅,35.01,139.01,,0,\n", encoding="utf-8")
         (self.path / "routes.txt").write_text(
             "route_id,agency_id,route_short_name,route_long_name,route_type\n"
             "r1,a,都99,試験路線,3\n", encoding="utf-8")
@@ -43,16 +44,43 @@ class ConverterTest(unittest.TestCase):
         group = next(item for item in index["stop_groups"] if item["stop_name"] == "試験駅前")
         self.assertEqual(2, len(group["platforms"]))
         self.assertEqual({"s1", "s2"}, {item["stop_id"] for item in group["platforms"]})
-        self.assertEqual(4, index["meta"]["schema_version"])
+        self.assertEqual(5, index["meta"]["schema_version"])
+        self.assertEqual({"1番のりば", "2番のりば"}, {item["platform_code"] for item in group["platforms"]})
+        self.assertEqual({"試験駅前"}, {item["stop_name"] for item in group["platforms"]})
         self.assertEqual(1, len(route_files))
 
     def test_far_same_name_stops_are_separate_groups(self):
         with (self.path / "stops.txt").open("a", encoding="utf-8") as handle:
-            handle.write("s4,試験駅前,36.0,140.0,遠方のりば\n")
+            handle.write("s4,試験駅前,36.0,140.0,遠方のりば,0,\n")
         index, _ = build_dataset(self.path, None, None, None)
         matching = [group for group in index["stop_groups"] if group["stop_name"] == "試験駅前"]
         self.assertEqual(2, len(matching))
         self.assertEqual(sorted([1, 2]), sorted(len(group["platforms"]) for group in matching))
+
+    def test_parent_station_name_replaces_numeric_child_name(self):
+        index, route_files = build_dataset(self.path, None, None, None)
+        group = next(item for item in index["stop_groups"] if item["stop_name"] == "試験駅前")
+        self.assertEqual({"1", "2"}, {item["raw_stop_name"] for item in group["platforms"]})
+        route_file = index["routes"]["r1"]["route_file"]
+        route_stops = route_files[route_file]["stops"]
+        self.assertEqual("試験駅前", route_stops["s1"]["stop_name"])
+        self.assertEqual("1番のりば", route_stops["s1"]["platform_code"])
+
+    def test_platform_label_normalization(self):
+        self.assertEqual("3番のりば", normalize_platform_label("3", "", ""))
+        self.assertEqual("4番のりば", normalize_platform_label("", "4", "錦糸町駅前"))
+        self.assertEqual("北口", normalize_platform_label("北口", "", ""))
+
+    def test_platform_sort_uses_numeric_order(self):
+        platforms = [
+            {"platform_code": "10番のりば", "stop_id": "s10"},
+            {"platform_code": "2番のりば", "stop_id": "s2"},
+            {"platform_code": "1番のりば", "stop_id": "s1"},
+        ]
+        self.assertEqual(
+            ["1番のりば", "2番のりば", "10番のりば"],
+            [item["platform_code"] for item in sorted(platforms, key=platform_sort_key)],
+        )
 
     def test_route_file_contains_timetable(self):
         index, route_files = build_dataset(self.path, None, None, None)

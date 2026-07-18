@@ -14,4 +14,4 @@ fi
 python3 tools/convert_gtfs.py "$SOURCE" --output-dir data
 python3 tools/validate_dataset.py data/transit-index.json
 
-echo "GTFS更新が完了しました。必要に応じて sw.js のCACHE_NAMEを更新してgit pushしてください。"
+echo "GTFS更新が完了しました。Phase 6用データを生成しました。sw.js は v7 に更新済みです。確認後にgit pushしてください。"

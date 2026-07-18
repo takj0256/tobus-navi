@@ -1,20 +1,23 @@
-# テスト結果 Phase 5
+# テスト結果 Phase 6
 
 ## 自動テスト
 
-- JavaScript単体テスト：27件成功
-- Python単体テスト：11件成功
+- JavaScript単体テスト：31件成功
+- Python単体テスト：14件成功
 - JavaScript構文確認：成功
 - Cloudflare Worker構文確認：成功
 - Python構文確認：成功
 
 ## 追加確認項目
 
-- 主取得先失敗後に予備取得先へ移行：成功
-- 応答しない取得先をタイムアウトして予備取得先へ移行：成功
-- GTFS-RTフィード経過時間と古さの判定：成功
-- ローカルHTTP配信で `index.html` と `js/app.js` を取得：成功
+- `parent_station` の親名称で数字だけの子停留所を統合：成功
+- 子停留所 `1` を `1番のりば` として表示用データへ変換：成功
+- 系統別停留所データでも親停留所名を保持：成功
+- 停留所全体の代表行き先要約：成功
+- のりば単位の行き先要約：成功
+- schema version 4以前を正式公開データとして拒否：成功
+- ローカルHTTP配信で `index.html`・`js/app.js`・`css/styles.css` を取得：成功
 
 ## 未確認
 
-実行環境のDNS制限により、ODPT公開GTFS-RTへの実ネットワーク接続は確認できなかった。Android実機または利用者のUbuntu環境で `python3 tools/check_realtime.py` を実行して確認する必要がある。
+実際の都バスGTFSを用いたAndroid実機上の表示確認は利用者環境で必要。特に大規模ターミナルでの折りたたみ表示と行き先要約を確認する。

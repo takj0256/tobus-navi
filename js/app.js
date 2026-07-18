@@ -10,7 +10,12 @@ import {
   nearbyStopGroups,
   searchStopGroups,
 } from "./data.js";
-import { displayHeadsign } from "./display.js";
+import {
+  displayHeadsign,
+  formatPlatformLabel,
+  destinationLabelsForPlatform,
+  destinationSummaryForGroup,
+} from "./display.js";
 import { buildSuggestionIndex, suggestSearchTerms, suggestionTypeLabel } from "./suggest.js";
 import {
   currentTokyoDateKey,
@@ -73,6 +78,7 @@ const state = {
   realtimeFailureCount: 0,
   realtimeInFlight: false,
   realtimeGeneration: 0,
+  openStopGroups: new Set(),
 };
 
 init();
@@ -98,7 +104,7 @@ async function init() {
     elements.datasetLabel.textContent = "正式データを読み込めませんでした";
     elements.datasetUpdatedAt.textContent = "未取得";
     setStatus("error", "交通データを利用できません", error.message);
-    elements.datasetSummary.textContent = "Phase 4変換スクリプトで data/transit-index.json と data/routes/ を生成してください。";
+    elements.datasetSummary.textContent = "Phase 6変換スクリプトで data/transit-index.json と data/routes/ を生成してください。";
   }
 }
 
@@ -298,19 +304,42 @@ function renderStopGroups(groups, showDistance) {
   }
 
   elements.resultsList.innerHTML = groups.map((group) => {
-    const platformCount = group.platforms?.length || 0;
+    const platforms = group.platforms || [];
+    const platformCount = platforms.length;
+    const destinationSummary = destinationSummaryForGroup(platforms, 4);
+    const platformMarkup = platforms.map((platform, index) => (
+      platformPanel(group, platform, index, platformCount)
+    )).join("");
+    const platformSection = platformCount > 1
+      ? `<details class="stop-platform-details" data-stop-details data-group-id="${escapeHtml(group.group_id)}" ${state.openStopGroups.has(group.group_id) ? "open" : ""}>
+          <summary class="stop-platform-summary">
+            <span><span class="closed-label">のりば・系統を表示</span><span class="open-label">のりば・系統を閉じる</span></span>
+            <span class="summary-count">${platformCount}か所</span>
+          </summary>
+          <div class="platform-list platform-tree">${platformMarkup}</div>
+        </details>`
+      : `<div class="platform-list single-platform-list">${platformMarkup}</div>`;
+
     return `<article class="stop-card stop-group-card" data-group-id="${escapeHtml(group.group_id)}">
       <div class="stop-header">
         <div class="stop-title-row">
           <h3 class="stop-title">${escapeHtml(group.stop_name)}</h3>
           ${showDistance ? `<span class="distance">${formatDistance(group.distance)}</span>` : ""}
         </div>
-        <div class="stop-meta"><span class="meta-chip">${platformCount}のりば</span><span class="meta-chip">上り・下りをまとめて表示</span></div>
+        <p class="stop-destination-summary">${escapeHtml(destinationSummary)}</p>
+        <div class="stop-meta"><span class="meta-chip">${platformCount}のりば</span></div>
       </div>
-      <div class="platform-list">${(group.platforms || []).map((platform, index) => platformPanel(group, platform, index)).join("")}</div>
+      ${platformSection}
     </article>`;
   }).join("");
 
+  elements.resultsList.querySelectorAll("[data-stop-details]").forEach((details) => {
+    details.addEventListener("toggle", () => {
+      const groupId = details.dataset.groupId;
+      if (details.open) state.openStopGroups.add(groupId);
+      else state.openStopGroups.delete(groupId);
+    });
+  });
   elements.resultsList.querySelectorAll("[data-route-action]").forEach((button) => {
     button.addEventListener("click", () => openRouteDetail(button.dataset.groupId, button.dataset.stopId, button.dataset.routeKey));
   });
@@ -319,13 +348,17 @@ function renderStopGroups(groups, showDistance) {
   });
 }
 
-function platformPanel(group, platform, index) {
+function platformPanel(group, platform, index, total) {
   const routes = deduplicateRoutes(platform.routes || []);
-  const destinationLabels = [...new Set(routes.map((route) => displayHeadsign(route.headsign)))].slice(0, 3);
-  const platformLabel = platform.platform_code || `${index + 1}番目ののりば`;
-  return `<section class="platform-panel">
+  const platformLabel = formatPlatformLabel(platform, index);
+  const destinationSummary = destinationLabelsForPlatform(platform, 3);
+  const treeGlyph = index === total - 1 ? "└" : "├";
+  return `<section class="platform-panel ${index === total - 1 ? "last-platform" : ""}">
     <div class="platform-heading">
-      <div><strong>${escapeHtml(platformLabel)}</strong><p>${escapeHtml(destinationLabels.join("・") || "行き先情報なし")}</p></div>
+      <div class="platform-heading-main">
+        <span class="platform-tree-glyph" aria-hidden="true">${treeGlyph}</span>
+        <div><strong>${escapeHtml(platformLabel)}</strong><p>${escapeHtml(destinationSummary)}</p></div>
+      </div>
       <span class="platform-count">${routes.length}方面</span>
     </div>
     <div class="route-list">${routes.map((route) => routeRow(group, platform, route)).join("") || "<p>系統情報がありません。</p>"}</div>
