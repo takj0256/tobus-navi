@@ -1,0 +1,10 @@
+{
+  "name": "tobus-navi-pwa",
+  "version": "0.3.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test:js": "node --test tests/js/*.test.js",
+    "check:js": "node --check js/app.js && node --check js/data.js && node --check js/display.js && node --check js/geo.js && node --check js/official.js && node --check sw.js"
+  }
+}

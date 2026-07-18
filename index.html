@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0a5ea8">
+  <meta name="description" content="現在地から近い都バス停留所と行き先をすばやく探すPWA">
+  <title>都バスナビ</title>
+  <link rel="manifest" href="./manifest.webmanifest">
+  <link rel="icon" href="./icons/icon-192.png">
+  <link rel="apple-touch-icon" href="./icons/icon-192.png">
+  <link rel="stylesheet" href="./css/styles.css">
+</head>
+<body>
+  <a class="skip-link" href="#results">検索結果へ移動</a>
+
+  <header class="app-header">
+    <div>
+      <p class="eyebrow">現在地からすぐ探せる</p>
+      <h1>都バスナビ</h1>
+    </div>
+    <button id="installButton" class="ghost-button hidden" type="button">ホームに追加</button>
+  </header>
+
+  <main>
+    <section class="hero-card" aria-labelledby="search-title">
+      <div class="hero-copy">
+        <h2 id="search-title">近くの停留所を探す</h2>
+        <p>位置情報は端末内でのみ使用し、外部へ送信しません。</p>
+      </div>
+
+      <button id="locateButton" class="primary-button" type="button">
+        <span aria-hidden="true">◎</span>
+        現在地から検索
+      </button>
+
+      <div class="search-options">
+        <label for="radiusSelect">検索半径</label>
+        <select id="radiusSelect">
+          <option value="200">200 m</option>
+          <option value="300" selected>300 m</option>
+          <option value="500">500 m</option>
+          <option value="1000">1 km</option>
+        </select>
+        <button id="refreshButton" class="secondary-button" type="button">再検索</button>
+      </div>
+
+      <div class="divider"><span>または</span></div>
+
+      <form id="manualSearchForm" class="manual-search" role="search">
+        <label for="manualSearchInput">停留所・駅名から探す</label>
+        <div class="input-row">
+          <input id="manualSearchInput" type="search" autocomplete="off" placeholder="例：新宿駅、渋谷駅前" maxlength="50">
+          <button class="secondary-button" type="submit">検索</button>
+        </div>
+      </form>
+
+      <button id="demoButton" class="text-button" type="button">新宿駅西口付近のデモを表示</button>
+    </section>
+
+    <section id="statusPanel" class="status-panel" aria-live="polite">
+      <div id="statusIcon" class="status-icon" aria-hidden="true">●</div>
+      <div>
+        <strong id="statusTitle">データを読み込んでいます</strong>
+        <p id="statusMessage">少しお待ちください。</p>
+      </div>
+    </section>
+
+    <section id="favoritesSection" class="content-section hidden" aria-labelledby="favorites-title">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">すぐ開く</p>
+          <h2 id="favorites-title">お気に入り</h2>
+        </div>
+        <button id="clearFavoritesButton" class="text-button danger" type="button">すべて解除</button>
+      </div>
+      <div id="favoritesList" class="route-grid"></div>
+    </section>
+
+    <section id="results" class="content-section" aria-labelledby="results-title">
+      <div class="section-heading">
+        <div>
+          <p id="resultsEyebrow" class="eyebrow">検索結果</p>
+          <h2 id="results-title">周辺の停留所</h2>
+        </div>
+        <span id="resultCount" class="count-badge">0件</span>
+      </div>
+      <div id="resultsList" class="results-list">
+        <div class="empty-state">
+          <span aria-hidden="true">🚌</span>
+          <p>現在地を取得するか、停留所名を入力してください。</p>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+  <dialog id="aboutDialog">
+    <div class="dialog-header">
+      <h2>このアプリについて</h2>
+      <button id="closeAboutButton" class="icon-button" type="button" aria-label="閉じる">×</button>
+    </div>
+    <p>現在地または停留所名から、近くの都バス停留所・系統・行き先を表示する試作PWAです。</p>
+    <p><strong>現在のデータ：</strong><span id="datasetLabel">確認中</span></p>
+    <p>公式GTFS-JPを同梱の変換スクリプトで加工すると、実データへ差し替えられます。</p>
+  </dialog>
+
+  <footer>
+    <button id="aboutButton" class="text-button" type="button">このアプリについて</button>
+    <p>データ提供元：東京都交通局・公共交通オープンデータ協議会（CC BY 4.0）</p>
+    <p>本アプリは非公式の個人開発用プロトタイプです。</p>
+  </footer>
+
+  <noscript>このアプリの利用にはJavaScriptを有効にしてください。</noscript>
+  <script type="module" src="./js/app.js"></script>
+</body>
+</html>

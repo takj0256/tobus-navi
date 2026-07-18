@@ -1,0 +1,15 @@
+{
+  "name": "都バスナビ",
+  "short_name": "都バスナビ",
+  "description": "現在地から近い都バス停留所と行き先をすばやく探すPWA",
+  "lang": "ja",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#f2f5f8",
+  "theme_color": "#0a5ea8",
+  "icons": [
+    {"src":"./icons/icon-192.png","sizes":"192x192","type":"image/png","purpose":"any maskable"},
+    {"src":"./icons/icon-512.png","sizes":"512x512","type":"image/png","purpose":"any maskable"}
+  ]
+}
