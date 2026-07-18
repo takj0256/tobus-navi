@@ -32,6 +32,8 @@ jobs:
         run: npm run test:js
       - name: Check JavaScript syntax
         run: npm run check:js
+      - name: Check Python syntax
+        run: python -m py_compile tools/*.py tests/*.py
       - name: Test GTFS converter
         run: python -m unittest discover -s tests -p "test_*.py" -v
       - name: Validate production dataset

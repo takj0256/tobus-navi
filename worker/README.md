@@ -1,6 +1,9 @@
-# 任意：GTFS-RT CORSプロキシ
+# 都バスGTFS-RT中継Worker
 
-GitHub Pagesから公開エンドポイントへ直接アクセスできない場合だけ使用します。
+Android ChromeまたはGitHub PagesからODPT公開配信へ直接アクセスできない場合に使用します。
+上流通信を8秒で打ち切り、成功したフィードを最大3分間だけ障害時の予備として保持します。
+
+## 公開
 
 ```bash
 cd worker
@@ -8,10 +11,10 @@ npx wrangler login
 npx wrangler deploy
 ```
 
-発行されたURLを `js/config.js` の `REALTIME_ENDPOINT` に設定します。
+表示されたURLを `js/config.js` の `REALTIME_PROXY_ENDPOINT` に設定します。
 
 ```js
-export const REALTIME_ENDPOINT = "https://tobus-realtime-proxy.<account>.workers.dev";
+export const REALTIME_PROXY_ENDPOINT = "https://your-worker.workers.dev";
 ```
 
-公開ODPTエンドポイントを中継するだけで、アクセストークンは使用しません。
+設定後はService Workerのキャッシュ名を上げ、GitHubへpushしてください。

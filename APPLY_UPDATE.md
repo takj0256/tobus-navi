@@ -1,47 +1,59 @@
-# UbuntuでPhase 4を既存リポジトリへ適用
+# UbuntuでPhase 5を既存リポジトリへ適用
 
-## 1. 現在のGitリポジトリを確認
+## 1. ZIPを展開
 
 ```bash
-cd /実際の/tobus-navi
+cd ~/Downloads
+rm -rf tobus-navi-pwa-phase5
+unzip tobus-navi-pwa-phase5.zip
+```
+
+## 2. Gitリポジトリへ移動
+
+実際の保存場所へ移動します。
+
+```bash
+cd ~/tobus-navi
+```
+
+場所が不明なら次で探します。
+
+```bash
+find ~ -type d -name .git 2>/dev/null
+```
+
+更新先を確認します。
+
+```bash
 REPO="$(git rev-parse --show-toplevel)"
 printf '更新先: %s\n' "$REPO"
 ```
 
-`/` と表示された場合は中止してください。
+`/` または空欄ならコピーしないでください。
 
-## 2. ZIPを展開して上書き
+## 3. 安全確認付きで上書き
 
 ```bash
-cd ~/Downloads
-rm -rf tobus-navi-pwa-phase4
-unzip tobus-navi-pwa-phase4.zip
+REPO="$(git rev-parse --show-toplevel)"
+SOURCE="$HOME/Downloads/tobus-navi-pwa-phase5"
 
-REPO="$(cd /実際の/tobus-navi && git rev-parse --show-toplevel)"
-if [[ -z "$REPO" || "$REPO" == "/" ]]; then
-  echo "危険な更新先のため中止: $REPO" >&2
+if [[ -z "$REPO" || "$REPO" == "/" || ! -d "$REPO/.git" ]]; then
+  echo "危険または不正な更新先のため中止: $REPO" >&2
   exit 1
 fi
 
-rsync -av --no-group \
-  ~/Downloads/tobus-navi-pwa-phase4/ \
-  "$REPO/"
+rsync -av --no-group "$SOURCE/" "$REPO/"
 ```
 
-## 3. 正式GTFSをPhase 4形式で再生成
-
-旧 `data/stops.json` だけでは時刻表・車両追跡を利用できません。
-
-```bash
-cd "$REPO"
-./tools/update_gtfs.sh ~/Downloads/ToeiBus-GTFS.zip
-```
+既存の `data/transit-index.json` と `data/routes/` は削除されません。
 
 ## 4. テスト
 
 ```bash
+cd "$REPO"
 npm run check:js
 npm run test:js
+python3 -m py_compile tools/*.py tests/*.py
 python3 -m unittest discover -s tests -p "test_*.py" -v
 python3 tools/validate_dataset.py data/transit-index.json
 ```
@@ -56,11 +68,17 @@ python3 tools/serve.py
 http://127.0.0.1:8000
 ```
 
-## 6. GitHubへ反映
+## 6. リアルタイム診断
+
+```bash
+python3 tools/check_realtime.py
+```
+
+## 7. GitHubへ反映
 
 ```bash
 git status
 git add .
-git commit -m "Add grouped stops timetable and realtime tracking"
+git commit -m "Make timetable collapsible and stabilize realtime updates"
 git push
 ```

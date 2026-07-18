@@ -14,11 +14,108 @@ const STATUS_LABELS = {
   2: "走行中",
 };
 
-export async function fetchRealtimeVehicles(endpoint, fetchImpl = fetch) {
-  const response = await fetchImpl(endpoint, { cache: "no-store" });
-  if (!response.ok) throw new Error(`リアルタイム情報を取得できませんでした（${response.status}）。`);
-  const buffer = await response.arrayBuffer();
-  return decodeGtfsRealtime(buffer);
+export class RealtimeFetchError extends Error {
+  constructor(attempts) {
+    const summary = attempts.map((item) => `${item.label}: ${item.message}`).join(" / ");
+    super(`リアルタイム情報を取得できませんでした。${summary}`);
+    this.name = "RealtimeFetchError";
+    this.attempts = attempts;
+  }
+}
+
+export async function fetchRealtimeVehicles(sources, options = {}) {
+  const normalizedSources = normalizeSources(sources);
+  const fetchImpl = options.fetchImpl || fetch;
+  const timeoutMs = Number(options.timeoutMs || 10_000);
+  const retries = Math.max(0, Number(options.retries ?? 0));
+  const attempts = [];
+
+  for (const source of normalizedSources) {
+    for (let retry = 0; retry <= retries; retry += 1) {
+      try {
+        const response = await fetchWithTimeout(source.url, fetchImpl, timeoutMs);
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const buffer = await response.arrayBuffer();
+        if (!buffer.byteLength) throw new Error("空のデータを受信しました");
+        const feed = decodeGtfsRealtime(buffer);
+        feed.source = source;
+        feed.receivedAt = Math.floor(Date.now() / 1000);
+        feed.contentType = response.headers?.get?.("content-type") || "";
+        return feed;
+      } catch (error) {
+        attempts.push({
+          id: source.id,
+          label: source.label,
+          url: source.url,
+          retry,
+          message: friendlyFetchMessage(error, timeoutMs),
+        });
+      }
+    }
+  }
+
+  throw new RealtimeFetchError(attempts);
+}
+
+export function realtimeFeedAgeMs(feed, nowMs = Date.now()) {
+  const timestamp = Number(feed?.timestamp || feed?.receivedAt || 0);
+  if (!timestamp) return Infinity;
+  return Math.max(0, nowMs - timestamp * 1000);
+}
+
+export function isRealtimeFeedStale(feed, nowMs = Date.now(), staleAfterMs = 90_000) {
+  return realtimeFeedAgeMs(feed, nowMs) > staleAfterMs;
+}
+
+async function fetchWithTimeout(url, fetchImpl, timeoutMs) {
+  const controller = typeof AbortController === "function" ? new AbortController() : null;
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      controller?.abort();
+      const error = new Error(`timeout:${timeoutMs}`);
+      error.name = "TimeoutError";
+      reject(error);
+    }, timeoutMs);
+  });
+
+  try {
+    return await Promise.race([
+      fetchImpl(url, {
+        cache: "no-store",
+        signal: controller?.signal,
+        headers: { Accept: "application/x-protobuf, application/octet-stream" },
+      }),
+      timeout,
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function normalizeSources(sources) {
+  const list = Array.isArray(sources) ? sources : [sources];
+  return list
+    .map((source, index) => typeof source === "string"
+      ? { id: `source-${index + 1}`, label: `取得先${index + 1}`, url: source }
+      : source)
+    .filter((source) => source?.url)
+    .map((source, index) => ({
+      id: source.id || `source-${index + 1}`,
+      label: source.label || `取得先${index + 1}`,
+      url: source.url,
+    }));
+}
+
+function friendlyFetchMessage(error, timeoutMs) {
+  if (error?.name === "TimeoutError" || String(error?.message || "").startsWith("timeout:")) {
+    return `${Math.round(timeoutMs / 1000)}秒でタイムアウト`;
+  }
+  if (error?.name === "AbortError") return "通信が中断されました";
+  if (/Failed to fetch|NetworkError|Load failed/i.test(String(error?.message || ""))) {
+    return "ネットワークまたはCORSエラー";
+  }
+  return error?.message || "不明な通信エラー";
 }
 
 export function decodeGtfsRealtime(buffer) {
@@ -44,11 +141,14 @@ export function decodeGtfsRealtime(buffer) {
   return feed;
 }
 
-export function getApproachingVehicles(routeData, selection, feed, nowMs = Date.now()) {
+export function getApproachingVehicles(routeData, selection, feed, nowMs = Date.now(), options = {}) {
+  const maxVehicleAgeMs = Number(options.maxVehicleAgeMs ?? Infinity);
   const trips = new Map((routeData.trips || []).map((trip) => [trip.trip_id, trip]));
   const results = [];
 
   for (const vehicle of feed?.vehicles || []) {
+    const vehicleTimestampMs = Number(vehicle.timestamp || 0) * 1000;
+    if (Number.isFinite(maxVehicleAgeMs) && vehicleTimestampMs && nowMs - vehicleTimestampMs > maxVehicleAgeMs) continue;
     const trip = trips.get(vehicle.trip?.tripId);
     if (!trip) continue;
     if (selection.direction_id !== "" && selection.direction_id !== undefined) {

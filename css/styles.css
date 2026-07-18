@@ -502,3 +502,46 @@ footer p { margin-bottom: .35rem; }
   .route-button { gap: .45rem; }
   .route-headsign { white-space: normal; }
 }
+
+/* Phase 5: collapsible timetable and realtime resilience */
+.timetable-details {
+  padding: 0;
+  overflow: hidden;
+}
+.timetable-summary {
+  min-height: 58px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: .9rem 0;
+  cursor: pointer;
+  list-style: none;
+  font-weight: 800;
+}
+.timetable-summary::-webkit-details-marker { display: none; }
+.timetable-summary::after {
+  content: "＋";
+  flex: 0 0 auto;
+  color: var(--primary);
+  font-size: 1.35rem;
+}
+.timetable-details[open] .timetable-summary::after { content: "−"; }
+.timetable-summary .eyebrow { display: block; }
+.timetable-details .timetable-grid {
+  padding: .25rem 0 .9rem;
+  border-top: 1px solid var(--border);
+}
+.live-bus-card.stale {
+  border-style: dashed;
+  opacity: .78;
+}
+.realtime-attempts {
+  margin: .45rem 0;
+  padding-left: 1.2rem;
+  color: var(--muted);
+  font-size: .8rem;
+}
+.realtime-error code {
+  overflow-wrap: anywhere;
+}

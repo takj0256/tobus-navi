@@ -107,7 +107,7 @@
 
       <section class="detail-block" aria-labelledby="live-title">
         <div class="section-heading compact-heading">
-          <div><p class="eyebrow">約20秒ごとに更新</p><h3 id="live-title">接近中のバス</h3></div>
+          <div><p class="eyebrow">通常20秒ごとに更新</p><h3 id="live-title">接近中のバス</h3></div>
           <button id="refreshRealtimeButton" class="secondary-button" type="button">現在位置を更新</button>
         </div>
         <div id="liveBusList" class="live-bus-list"></div>
@@ -129,13 +129,13 @@
         <div id="upcomingDepartures" class="departure-list"></div>
       </section>
 
-      <section class="detail-block" aria-labelledby="timetable-title">
-        <div class="section-heading compact-heading">
-          <div><p class="eyebrow">本日の運行</p><h3 id="timetable-title">時刻表</h3></div>
+      <details id="timetableDetails" class="detail-block timetable-details">
+        <summary class="timetable-summary">
+          <span><span class="eyebrow">本日の運行</span><strong id="timetableSummaryLabel">時刻表を開く</strong></span>
           <span id="timetableDate" class="count-badge"></span>
-        </div>
-        <div id="dailyTimetable" class="timetable-grid"></div>
-      </section>
+        </summary>
+        <div id="dailyTimetable" class="timetable-grid" aria-live="polite"></div>
+      </details>
 
       <p class="estimate-note">到着時刻はGTFSの予定時刻と車両位置の更新時刻から算出した推定値であり、交通状況により前後します。</p>
     </section>

@@ -24,10 +24,19 @@ import {
   buildFutureStopEstimates,
   fetchRealtimeVehicles,
   getApproachingVehicles,
+  isRealtimeFeedStale,
+  realtimeFeedAgeMs,
   realtimeStatusLabel,
   vehicleLocationLabel,
 } from "./realtime.js";
-import { REALTIME_ENDPOINT, REALTIME_REFRESH_MS } from "./config.js";
+import {
+  REALTIME_MAX_BACKOFF_MS,
+  REALTIME_REFRESH_MS,
+  REALTIME_SOURCES,
+  REALTIME_STALE_AFTER_MS,
+  REALTIME_TIMEOUT_MS,
+  REALTIME_VEHICLE_MAX_AGE_MS,
+} from "./config.js";
 
 const elements = Object.fromEntries([
   "locateButton", "refreshButton", "radiusSelect", "manualSearchForm", "manualSearchInput",
@@ -39,6 +48,7 @@ const elements = Object.fromEntries([
   "routeDetailSubtitle", "routeDetailStatus", "closeDetailButton", "refreshRealtimeButton",
   "liveBusList", "vehicleTrackingSection", "closeTrackingButton", "vehicleSummary",
   "futureStopsList", "upcomingDepartures", "dailyTimetable", "timetableDate",
+  "timetableDetails", "timetableSummaryLabel",
 ].map((id) => [id, document.querySelector(`#${id}`)]));
 
 elements.resultsTitle = document.querySelector("#results-title");
@@ -59,6 +69,10 @@ const state = {
   realtimeFeed: null,
   realtimeTimer: null,
   selectedVehicleId: null,
+  timetableRenderedKey: "",
+  realtimeFailureCount: 0,
+  realtimeInFlight: false,
+  realtimeGeneration: 0,
 };
 
 init();
@@ -126,6 +140,27 @@ function bindEvents() {
   elements.closeTrackingButton.addEventListener("click", () => {
     state.selectedVehicleId = null;
     renderVehicleTracking([]);
+  });
+  elements.timetableDetails.addEventListener("toggle", () => {
+    elements.timetableSummaryLabel.textContent = elements.timetableDetails.open ? "時刻表を閉じる" : "時刻表を開く";
+    if (elements.timetableDetails.open) renderDailyTimetable();
+  });
+  window.addEventListener("online", () => {
+    if (!state.activeSelection) return;
+    state.realtimeFailureCount = 0;
+    showToast("通信が復旧しました。車両位置を更新します。");
+    refreshRealtime(true);
+  });
+  window.addEventListener("offline", () => {
+    clearRealtimeTimer();
+    if (state.activeSelection) {
+      elements.routeDetailStatus.textContent = "オフラインです。時刻表は利用できますが、車両位置は更新できません。";
+    }
+  });
+  document.addEventListener("visibilitychange", () => {
+    if (!state.activeSelection) return;
+    if (document.hidden) clearRealtimeTimer();
+    else refreshRealtime(false);
   });
   window.addEventListener("beforeinstallprompt", (event) => {
     event.preventDefault();
@@ -322,6 +357,13 @@ async function openRouteDetail(groupId, stopId, routeKey) {
   state.activeSelection = selection;
   state.selectedVehicleId = null;
   state.activeRouteData = null;
+  state.realtimeFeed = null;
+  state.realtimeFailureCount = 0;
+  state.realtimeInFlight = false;
+  state.realtimeGeneration += 1;
+  state.timetableRenderedKey = "";
+  elements.timetableDetails.open = false;
+  elements.timetableSummaryLabel.textContent = "時刻表を開く";
   recordRecent(selection);
   renderFavorites();
   renderRecents();
@@ -342,7 +384,6 @@ async function openRouteDetail(groupId, stopId, routeKey) {
     state.activeRouteData = await getRouteData(selection.route.route_file);
     renderStaticSchedule();
     await refreshRealtime(false);
-    state.realtimeTimer = window.setInterval(() => refreshRealtime(false), REALTIME_REFRESH_MS);
   } catch (error) {
     console.error(error);
     elements.routeDetailStatus.textContent = error.message;
@@ -354,7 +395,6 @@ function renderStaticSchedule() {
   const selection = selectionForSchedule();
   const now = new Date();
   const upcoming = getUpcomingDepartures(state.activeRouteData, selection, now, 12);
-  const daily = getDailyTimetable(state.activeRouteData, selection, currentTokyoDateKey(now));
   elements.routeDetailStatus.textContent = `${state.activeRouteData.route.route_name}の正式GTFS-JP時刻表を表示しています。`;
   elements.timetableDate.textContent = new Intl.DateTimeFormat("ja-JP", { timeZone: "Asia/Tokyo", month: "numeric", day: "numeric", weekday: "short" }).format(now);
 
@@ -363,32 +403,104 @@ function renderStaticSchedule() {
     return `<div class="departure-card"><strong>${formatTimestampClock(departure.departure_ms)}</strong><span>${mins === 0 ? "まもなく" : `あと${mins}分`}</span></div>`;
   }).join("") : `<p class="empty-message">この先30時間以内の発車予定がありません。</p>`;
 
+  elements.dailyTimetable.innerHTML = `<p class="empty-message">「時刻表を開く」をタップすると本日の全便を表示します。</p>`;
+  if (elements.timetableDetails.open) renderDailyTimetable();
+}
+
+function renderDailyTimetable() {
+  if (!state.activeRouteData || !state.activeSelection) return;
+  const selection = selectionForSchedule();
+  const dateKey = currentTokyoDateKey();
+  const renderKey = `${state.activeSelection.platform.stop_id}|${state.activeSelection.routeKey}|${dateKey}`;
+  if (state.timetableRenderedKey === renderKey) return;
+
+  const daily = getDailyTimetable(state.activeRouteData, selection, dateKey);
   elements.dailyTimetable.innerHTML = daily.length ? daily.map((departure) => (
     `<span class="time-chip">${formatGtfsClock(departure.scheduled_seconds)}</span>`
   )).join("") : `<p class="empty-message">本日の運行予定がありません。</p>`;
+  state.timetableRenderedKey = renderKey;
 }
 
-async function refreshRealtime(userRequested) {
+async function refreshRealtime(userRequested = false) {
   if (!state.activeSelection || !state.activeRouteData) return;
+  if (state.realtimeInFlight) {
+    if (userRequested) showToast("車両位置を更新中です。");
+    return;
+  }
+  clearRealtimeTimer();
+  if (!navigator.onLine) {
+    elements.routeDetailStatus.textContent = "オフラインです。時刻表は利用できますが、車両位置は更新できません。";
+    return;
+  }
+
+  const generation = state.realtimeGeneration;
+  state.realtimeInFlight = true;
   elements.refreshRealtimeButton.disabled = true;
   if (userRequested) elements.routeDetailStatus.textContent = "車両位置を更新しています…";
+
   try {
-    state.realtimeFeed = await fetchRealtimeVehicles(REALTIME_ENDPOINT);
+    const feed = await fetchRealtimeVehicles(REALTIME_SOURCES, {
+      timeoutMs: REALTIME_TIMEOUT_MS,
+      retries: 0,
+    });
+    if (generation !== state.realtimeGeneration || !state.activeSelection) return;
+    state.realtimeFeed = feed;
+    state.realtimeFailureCount = 0;
     renderRealtime();
   } catch (error) {
+    if (generation !== state.realtimeGeneration || !state.activeSelection) return;
     console.error(error);
-    elements.routeDetailStatus.textContent = "リアルタイム情報を取得できませんでした。時刻表は引き続き利用できます。";
-    elements.liveBusList.innerHTML = `<div class="realtime-error"><strong>車両位置を取得できません</strong><p>${escapeHtml(error.message)}</p><p>ブラウザのCORS制約が原因の場合は同梱のCloudflare Workerを設定してください。</p></div>`;
+    state.realtimeFailureCount += 1;
+    const retrySeconds = Math.round(nextRealtimeDelayMs() / 1000);
+    elements.routeDetailStatus.textContent = `車両位置を取得できませんでした。${retrySeconds}秒後に再試行します。時刻表は利用できます。`;
+    elements.liveBusList.innerHTML = realtimeErrorMarkup(error, retrySeconds);
   } finally {
-    elements.refreshRealtimeButton.disabled = false;
+    if (generation === state.realtimeGeneration) {
+      state.realtimeInFlight = false;
+      elements.refreshRealtimeButton.disabled = false;
+      scheduleRealtimeRefresh();
+    }
   }
+}
+
+function scheduleRealtimeRefresh() {
+  clearRealtimeTimer();
+  if (!state.activeSelection || document.hidden || !navigator.onLine) return;
+  state.realtimeTimer = window.setTimeout(() => refreshRealtime(false), nextRealtimeDelayMs());
+}
+
+function nextRealtimeDelayMs() {
+  if (!state.realtimeFailureCount) return REALTIME_REFRESH_MS;
+  return Math.min(
+    REALTIME_MAX_BACKOFF_MS,
+    REALTIME_REFRESH_MS * (2 ** Math.min(state.realtimeFailureCount, 3)),
+  );
+}
+
+function realtimeErrorMarkup(error, retrySeconds) {
+  const attempts = Array.isArray(error?.attempts) ? error.attempts : [];
+  const details = attempts.length
+    ? `<ul class="realtime-attempts">${attempts.map((attempt) => `<li>${escapeHtml(attempt.label)}：${escapeHtml(attempt.message)}</li>`).join("")}</ul>`
+    : `<p>${escapeHtml(error.message || "通信エラーが発生しました。")}</p>`;
+  const proxyHint = attempts.some((attempt) => /CORS|ネットワーク/i.test(attempt.message))
+    ? `<p>Android Chromeから直接取得できない場合は、同梱のCloudflare Workerを公開し、<code>js/config.js</code>へURLを設定してください。</p>`
+    : "";
+  return `<div class="realtime-error"><strong>車両位置を取得できません</strong>${details}${proxyHint}<p>${retrySeconds}秒後に自動再試行します。「現在位置を更新」で即時再試行できます。</p></div>`;
 }
 
 function renderRealtime() {
   const selection = selectionForSchedule();
-  const vehicles = getApproachingVehicles(state.activeRouteData, selection, state.realtimeFeed, Date.now());
+  const nowMs = Date.now();
+  const vehicles = getApproachingVehicles(state.activeRouteData, selection, state.realtimeFeed, nowMs, {
+    maxVehicleAgeMs: REALTIME_VEHICLE_MAX_AGE_MS,
+  });
   const feedTime = state.realtimeFeed.timestamp ? formatTimestampClock(state.realtimeFeed.timestamp * 1000) : "不明";
-  elements.routeDetailStatus.textContent = `車両位置 ${vehicles.length}台・最終更新 ${feedTime}`;
+  const sourceLabel = state.realtimeFeed.source?.label || "リアルタイム配信";
+  const ageMinutes = Math.ceil(realtimeFeedAgeMs(state.realtimeFeed, nowMs) / 60_000);
+  const stale = isRealtimeFeedStale(state.realtimeFeed, nowMs, REALTIME_STALE_AFTER_MS);
+  elements.routeDetailStatus.textContent = stale
+    ? `位置情報が古い可能性があります（${ageMinutes}分前・${sourceLabel}）。自動再取得を継続します。`
+    : `車両位置 ${vehicles.length}台・最終更新 ${feedTime}・${sourceLabel}`;
 
   if (!vehicles.length) {
     elements.liveBusList.innerHTML = `<p class="empty-message">現在、この停留所へ向かう車両をGTFS-RT上で確認できません。予定時刻表をご利用ください。</p>`;
@@ -399,7 +511,8 @@ function renderRealtime() {
   elements.liveBusList.innerHTML = vehicles.map((item, index) => {
     const vehicleId = vehicleKey(item.vehicle);
     const label = item.vehicle.vehicle?.label || item.vehicle.vehicle?.id || `バス${index + 1}`;
-    return `<button class="live-bus-card ${vehicleId === state.selectedVehicleId ? "selected" : ""}" type="button" data-vehicle-id="${escapeHtml(vehicleId)}">
+    const staleClass = isRealtimeFeedStale(state.realtimeFeed, Date.now(), REALTIME_STALE_AFTER_MS) ? "stale" : "";
+    return `<button class="live-bus-card ${vehicleId === state.selectedVehicleId ? "selected" : ""} ${staleClass}" type="button" data-vehicle-id="${escapeHtml(vehicleId)}">
       <span class="live-bus-top"><strong>${escapeHtml(label)}</strong><span class="live-status">${escapeHtml(realtimeStatusLabel(item.vehicle.currentStatus))}</span></span>
       <span class="live-location">${escapeHtml(item.currentLabel)}</span>
       <span class="live-eta"><b>${item.minutes === 0 ? "まもなく" : `約${item.minutes}分`}</b>・${item.stopsAway}停留所前</span>
@@ -444,6 +557,8 @@ function renderVehicleTracking(vehicles) {
 
 function closeRouteDetail() {
   clearRealtimeTimer();
+  state.realtimeGeneration += 1;
+  state.realtimeInFlight = false;
   state.activeSelection = null;
   state.activeRouteData = null;
   state.selectedVehicleId = null;

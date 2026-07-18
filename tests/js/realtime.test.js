@@ -1,6 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { decodeGtfsRealtime, estimateVehicleProgress, buildFutureStopEstimates } from "../../js/realtime.js";
+import {
+  buildFutureStopEstimates,
+  decodeGtfsRealtime,
+  estimateVehicleProgress,
+  fetchRealtimeVehicles,
+  isRealtimeFeedStale,
+  realtimeFeedAgeMs,
+} from "../../js/realtime.js";
 import { scheduledTimestampMs } from "../../js/timetable.js";
 
 function varint(value) {
@@ -79,4 +86,44 @@ test("選択車両の将来到着一覧を生成する", () => {
   assert.equal(future.length, 2);
   assert.equal(future[0].stop_name, "始発");
   assert.equal(future[1].minutes, 10);
+});
+
+
+test("取得先を順番に試してフォールバックする", async () => {
+  const calls = [];
+  const fetchImpl = async (url) => {
+    calls.push(url);
+    if (url.includes("primary")) throw new TypeError("Failed to fetch");
+    return new Response(makeFeed(), {
+      status: 200,
+      headers: { "content-type": "application/x-protobuf" },
+    });
+  };
+  const feed = await fetchRealtimeVehicles([
+    { id: "primary", label: "直接配信", url: "https://primary.example/feed" },
+    { id: "proxy", label: "中継", url: "https://proxy.example/feed" },
+  ], { fetchImpl, timeoutMs: 100, retries: 0 });
+  assert.deepEqual(calls, ["https://primary.example/feed", "https://proxy.example/feed"]);
+  assert.equal(feed.source.id, "proxy");
+  assert.equal(feed.vehicles.length, 1);
+});
+
+test("応答しない取得先をタイムアウトして次へ進む", async () => {
+  const fetchImpl = (url) => {
+    if (url.includes("slow")) return new Promise(() => {});
+    return Promise.resolve(new Response(makeFeed(), { status: 200 }));
+  };
+  const feed = await fetchRealtimeVehicles([
+    { id: "slow", label: "遅い配信", url: "https://slow.example/feed" },
+    { id: "backup", label: "予備", url: "https://backup.example/feed" },
+  ], { fetchImpl, timeoutMs: 5, retries: 0 });
+  assert.equal(feed.source.id, "backup");
+});
+
+test("フィードの経過時間と古さを判定する", () => {
+  const nowMs = Date.parse("2026-07-19T00:02:00Z");
+  const feed = { timestamp: Math.floor(Date.parse("2026-07-19T00:00:00Z") / 1000) };
+  assert.equal(realtimeFeedAgeMs(feed, nowMs), 120000);
+  assert.equal(isRealtimeFeedStale(feed, nowMs, 90000), true);
+  assert.equal(isRealtimeFeedStale(feed, nowMs, 180000), false);
 });
