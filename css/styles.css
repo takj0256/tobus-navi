@@ -203,3 +203,99 @@ footer p { margin-bottom: .35rem; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; transition: none !important; }
 }
+
+/* Phase 3: formal data, search suggestions and usage history */
+.suggestion-anchor {
+  position: relative;
+}
+
+.suggestion-list {
+  position: absolute;
+  z-index: 20;
+  top: calc(100% + .35rem);
+  left: 0;
+  right: 0;
+  max-height: min(22rem, 55vh);
+  overflow-y: auto;
+  padding: .35rem;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--surface);
+  box-shadow: 0 16px 40px rgba(12, 36, 58, .18);
+}
+
+.suggestion-item {
+  width: 100%;
+  min-height: 48px;
+  display: grid;
+  grid-template-columns: 4.5rem 1fr;
+  align-items: center;
+  gap: .65rem;
+  border: 0;
+  border-radius: 10px;
+  padding: .65rem .75rem;
+  color: var(--text);
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+
+.suggestion-item:hover,
+.suggestion-item.active,
+.suggestion-item[aria-selected="true"] {
+  background: var(--surface-soft);
+}
+
+.suggestion-type {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 28px;
+  padding: .2rem .45rem;
+  border-radius: 999px;
+  color: var(--primary-dark);
+  background: var(--surface-soft);
+  font-size: .76rem;
+  font-weight: 700;
+}
+
+.suggestion-value {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-weight: 650;
+}
+
+.status-detail {
+  margin-top: .3rem;
+  color: var(--muted);
+  font-size: .78rem;
+}
+
+.route-state {
+  justify-self: end;
+  padding: .15rem .4rem;
+  border-radius: 999px;
+  color: var(--primary-dark);
+  background: var(--surface-soft);
+  font-size: .68rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.priority-route {
+  border-radius: 14px;
+  outline: 1px solid rgba(10, 94, 168, .18);
+  outline-offset: 2px;
+}
+
+@media (max-width: 520px) {
+  .suggestion-list {
+    max-height: 48vh;
+  }
+  .suggestion-item {
+    grid-template-columns: 4rem 1fr;
+  }
+  .route-state {
+    display: none;
+  }
+}

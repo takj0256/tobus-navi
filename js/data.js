@@ -2,10 +2,25 @@ import { haversineMeters } from "./geo.js";
 
 export async function loadDataset(url = "./data/stops.json") {
   const response = await fetch(url, { cache: "no-cache" });
-  if (!response.ok) throw new Error(`停留所データを読み込めませんでした（${response.status}）。`);
+  if (!response.ok) {
+    throw new Error(`停留所データを読み込めませんでした（${response.status}）。正式GTFS-JPから data/stops.json を生成してください。`);
+  }
+
   const dataset = await response.json();
-  if (!dataset || !Array.isArray(dataset.stops)) throw new Error("停留所データの形式が正しくありません。");
+  validateDataset(dataset);
   return dataset;
+}
+
+export function validateDataset(dataset) {
+  if (!dataset || !Array.isArray(dataset.stops)) {
+    throw new Error("停留所データの形式が正しくありません。");
+  }
+  if (dataset.meta?.demo === true) {
+    throw new Error("デモデータは正式版では使用できません。公式GTFS-JPから data/stops.json を再生成してください。");
+  }
+  if (dataset.stops.length === 0) {
+    throw new Error("停留所データが空です。公式GTFS-JPから data/stops.json を再生成してください。");
+  }
 }
 
 export function nearbyStops(stops, latitude, longitude, radiusMeters) {
@@ -24,19 +39,29 @@ export function searchStops(stops, rawQuery) {
 
   return stops
     .map((stop) => {
-      const searchable = [
-        stop.stop_name,
-        stop.stop_name_kana,
-        stop.platform_code,
-        ...(stop.routes || []).flatMap((route) => [route.route_name, route.headsign]),
-      ].filter(Boolean).map(normalizeSearchText).join(" ");
+      const stopName = normalizeSearchText(stop.stop_name);
+      const stopKana = normalizeSearchText(stop.stop_name_kana);
+      const platform = normalizeSearchText(stop.platform_code);
+      const routeValues = (stop.routes || []).flatMap((route) => [route.route_name, route.headsign]);
+      const routeTexts = routeValues.filter(Boolean).map(normalizeSearchText);
 
       let score = 0;
-      const stopName = normalizeSearchText(stop.stop_name);
-      if (stopName === query) score += 100;
-      if (stopName.startsWith(query)) score += 50;
-      if (stopName.includes(query)) score += 25;
-      if (searchable.includes(query)) score += 10;
+      if (stopName === query) score += 1000;
+      else if (stopName.startsWith(query)) score += 600;
+      else if (stopName.includes(query)) score += 350;
+
+      if (stopKana === query) score += 500;
+      else if (stopKana.startsWith(query)) score += 300;
+      else if (stopKana.includes(query)) score += 180;
+
+      if (platform.includes(query)) score += 80;
+
+      for (const routeText of routeTexts) {
+        if (routeText === query) score += 450;
+        else if (routeText.startsWith(query)) score += 250;
+        else if (routeText.includes(query)) score += 120;
+      }
+
       return { ...stop, searchScore: score };
     })
     .filter((stop) => stop.searchScore > 0)

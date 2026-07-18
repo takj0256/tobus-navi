@@ -1,38 +1,45 @@
 # テスト結果
 
-実施日：2026-07-18
+実施日：2026-07-19
 
 ## 自動テスト
 
-- Python単体テスト：4件成功
+- JavaScript単体テスト：28件成功
+  - Haversine距離
+  - 半径検索と距離順
+  - 停留所・系統・行き先検索
+  - 同名別のりば保持
+  - 正式データ受付、デモデータ拒否、空データ拒否
+  - 行き先表示
+  - 公式URLフォールバック
+  - サジェスト索引の重複排除
+  - 停留所名・よみがな・系統・行き先候補
+  - 候補数上限
+- Python単体テスト：7件成功
   - GTFSディレクトリ入力
   - GTFS ZIP入力
   - 地域半径フィルタ
-  - Haversine距離計算
-  - GTFS headsignの原文保持、schema version 2、direction_label廃止の確認を既存テスト内に追加
-- JavaScript単体テスト：19件成功
-  - Haversine距離と距離表示
-  - 半径検索と距離順ソート
-  - 同名でもstop_id・のりばが異なる停留所を別項目として保持
-  - 停留所名の完全一致・部分一致順位
-  - 「新宿駅」から「新宿駅西口」を検索
-  - 全角英数字・空白の正規化
-  - 系統番号・行き先検索
-  - 公式URLの優先順位とフォールバック
-  - 行き先表示時の「行き」補完と、既存接尾辞の保持
-- JavaScript構文確認：`app.js`, `data.js`, `display.js`, `geo.js`, `official.js`, `sw.js` 成功
-- Python構文確認：`convert_gtfs.py`, `serve.py` 成功
-- HTML参照ファイル・Service Workerキャッシュ対象の存在確認：成功
+  - Haversine距離
+  - 正式データ検証
+  - デモデータ拒否
+  - 空データ拒否
+- JavaScript構文確認：成功
+- Python構文確認：成功
+- ローカルHTTP配信確認：成功
+- Service Worker参照ファイル確認：成功
 
-## 統合版で確認した内容
+## 正式データについて
 
-- 未許可状態では起動直後に位置情報プロンプトを出さない
-- 許可済みの場合のみ起動時に自動検索する
-- 拒否済みの場合はブラウザ設定または手動検索を案内する
-- 公式サイトは `window.location.assign()` で同じタブに遷移し、ポップアップブロックを回避する
-- `direction_label` をデータ・UIから削除する
-- GTFSの `trip_headsign` は保存時に加工せず、UI表示時だけ必要に応じて「行き」を補う
-- 同名停留所でも別のりば・別stop_idなら検索結果から失われない
-- GitHub Pages公開前にJavaScript・Pythonテストを自動実行する
+配布ZIPには `data/stops.json` を含めていないため、配布物単体では正式データ検証を実行していません。既存GitHubリポジトリの正式な `data/stops.json` を保持して更新を適用し、次を実行してください。
 
-未実施：Android実機でのGPS権限状態別動作、PWAインストール、クリップボード許可、都バス公式サイト遷移確認。
+```bash
+python3 tools/validate_dataset.py data/stops.json
+```
+
+## 実機で再確認が必要な項目
+
+- Android Chromeでのサジェスト表示とタップ
+- ソフトウェアキーボード表示時の候補リスト位置
+- 位置情報権限状態別の動作
+- PWA更新後のService Worker切り替え
+- 都バス公式サイトへの遷移

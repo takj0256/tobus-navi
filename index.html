@@ -47,15 +47,25 @@
 
       <div class="divider"><span>または</span></div>
 
-      <form id="manualSearchForm" class="manual-search" role="search">
-        <label for="manualSearchInput">停留所・駅名から探す</label>
-        <div class="input-row">
-          <input id="manualSearchInput" type="search" autocomplete="off" placeholder="例：新宿駅、渋谷駅前" maxlength="50">
-          <button class="secondary-button" type="submit">検索</button>
+      <form id="manualSearchForm" class="manual-search" role="search" autocomplete="off">
+        <label for="manualSearchInput">停留所・系統・行き先から探す</label>
+        <div class="suggestion-anchor">
+          <div class="input-row">
+            <input
+              id="manualSearchInput"
+              type="search"
+              autocomplete="off"
+              placeholder="例：新宿駅、都01、渋谷駅前"
+              maxlength="50"
+              aria-autocomplete="list"
+              aria-controls="searchSuggestions"
+              aria-expanded="false"
+            >
+            <button class="secondary-button" type="submit">検索</button>
+          </div>
+          <div id="searchSuggestions" class="suggestion-list hidden" role="listbox" aria-label="検索候補"></div>
         </div>
       </form>
-
-      <button id="demoButton" class="text-button" type="button">新宿駅西口付近のデモを表示</button>
     </section>
 
     <section id="statusPanel" class="status-panel" aria-live="polite">
@@ -63,6 +73,7 @@
       <div>
         <strong id="statusTitle">データを読み込んでいます</strong>
         <p id="statusMessage">少しお待ちください。</p>
+        <p id="datasetSummary" class="status-detail"></p>
       </div>
     </section>
 
@@ -77,6 +88,17 @@
       <div id="favoritesList" class="route-grid"></div>
     </section>
 
+    <section id="recentSection" class="content-section hidden" aria-labelledby="recent-title">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">最近選択した系統</p>
+          <h2 id="recent-title">最近使ったもの</h2>
+        </div>
+        <button id="clearRecentButton" class="text-button danger" type="button">履歴を消去</button>
+      </div>
+      <div id="recentList" class="route-grid"></div>
+    </section>
+
     <section id="results" class="content-section" aria-labelledby="results-title">
       <div class="section-heading">
         <div>
@@ -88,7 +110,7 @@
       <div id="resultsList" class="results-list">
         <div class="empty-state">
           <span aria-hidden="true">🚌</span>
-          <p>現在地を取得するか、停留所名を入力してください。</p>
+          <p>現在地を取得するか、停留所・系統・行き先を入力してください。</p>
         </div>
       </div>
     </section>
@@ -101,15 +123,16 @@
       <h2>このアプリについて</h2>
       <button id="closeAboutButton" class="icon-button" type="button" aria-label="閉じる">×</button>
     </div>
-    <p>現在地または停留所名から、近くの都バス停留所・系統・行き先を表示する試作PWAです。</p>
-    <p><strong>現在のデータ：</strong><span id="datasetLabel">確認中</span></p>
-    <p>公式GTFS-JPを同梱の変換スクリプトで加工すると、実データへ差し替えられます。</p>
+    <p>現在地または検索語から、近くの都バス停留所・系統・行き先を表示するPWAです。</p>
+    <p><strong>データ：</strong><span id="datasetLabel">確認中</span></p>
+    <p><strong>生成日時：</strong><span id="datasetUpdatedAt">確認中</span></p>
+    <p>停留所データは公式GTFS-JPを同梱の変換スクリプトで加工して利用します。</p>
   </dialog>
 
   <footer>
     <button id="aboutButton" class="text-button" type="button">このアプリについて</button>
     <p>データ提供元：東京都交通局・公共交通オープンデータ協議会（CC BY 4.0）</p>
-    <p>本アプリは非公式の個人開発用プロトタイプです。</p>
+    <p>本アプリは東京都交通局の公式アプリではありません。</p>
   </footer>
 
   <noscript>このアプリの利用にはJavaScriptを有効にしてください。</noscript>
