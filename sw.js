@@ -1,14 +1,16 @@
-const CACHE_NAME = "tobus-navi-v4";
+const CACHE_NAME = "tobus-navi-v5";
 const APP_SHELL = [
   "./",
   "./index.html",
   "./css/styles.css",
   "./js/app.js",
+  "./js/config.js",
   "./js/geo.js",
   "./js/data.js",
   "./js/display.js",
-  "./js/official.js",
   "./js/suggest.js",
+  "./js/timetable.js",
+  "./js/realtime.js",
   "./manifest.webmanifest",
   "./icons/icon-192.png",
   "./icons/icon-512.png"
@@ -20,11 +22,9 @@ self.addEventListener("install", (event) => {
 });
 
 self.addEventListener("activate", (event) => {
-  event.waitUntil(
-    caches.keys().then((keys) => Promise.all(
-      keys.filter((key) => key !== CACHE_NAME).map((key) => caches.delete(key))
-    ))
-  );
+  event.waitUntil(caches.keys().then((keys) => Promise.all(
+    keys.filter((key) => key !== CACHE_NAME).map((key) => caches.delete(key))
+  )));
   self.clients.claim();
 });
 
@@ -32,7 +32,10 @@ self.addEventListener("fetch", (event) => {
   if (event.request.method !== "GET") return;
   const url = new URL(event.request.url);
 
-  if (url.origin === self.location.origin && url.pathname.endsWith("/data/stops.json")) {
+  // 外部GTFS-RTはキャッシュせず、常に現在情報を取得する。
+  if (url.origin !== self.location.origin) return;
+
+  if (url.pathname.includes("/data/")) {
     event.respondWith(networkFirst(event.request));
     return;
   }
@@ -56,20 +59,14 @@ async function networkFirst(request) {
 async function staleWhileRevalidate(request) {
   const cache = await caches.open(CACHE_NAME);
   const cached = await cache.match(request);
-  const networkPromise = fetch(request)
-    .then(async (response) => {
-      if (response.ok && new URL(request.url).origin === self.location.origin) {
-        await cache.put(request, response.clone());
-      }
-      return response;
-    })
-    .catch(() => null);
+  const networkPromise = fetch(request).then(async (response) => {
+    if (response.ok) await cache.put(request, response.clone());
+    return response;
+  }).catch(() => null);
 
   if (cached) {
     networkPromise.catch(() => null);
     return cached;
   }
-
-  const network = await networkPromise;
-  return network || caches.match("./index.html");
+  return (await networkPromise) || caches.match("./index.html");
 }

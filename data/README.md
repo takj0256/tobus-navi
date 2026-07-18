@@ -1,13 +1,14 @@
-# 停留所データ
+# 正式GTFSデータの生成先
 
-正式版ではデモデータを同梱しません。
-
-ODPTから取得した都バスGTFS-JPを、プロジェクトルートで次のように変換してください。
+このディレクトリには配布ZIP時点では正式データを含めません。
 
 ```bash
-python3 tools/convert_gtfs.py ~/Downloads/ToeiBus-GTFS.zip \
-  --output data/stops.json \
-  --pretty
+python3 tools/convert_gtfs.py \
+  ~/Downloads/ToeiBus-GTFS.zip \
+  --output-dir data
 ```
 
-既に正式な `data/stops.json` があるリポジトリへ本更新を適用する場合、そのファイルはそのまま保持してください。
+生成物：
+
+- `transit-index.json`：同名停留所グループ、のりば、系統索引
+- `routes/*.json`：系統別の便、停車順、時刻表、運行日

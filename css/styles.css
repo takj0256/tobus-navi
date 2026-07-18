@@ -299,3 +299,206 @@ footer p { margin-bottom: .35rem; }
     display: none;
   }
 }
+
+/* Phase 4: grouped stops, timetable and realtime tracking */
+.platform-list {
+  display: grid;
+  gap: .8rem;
+  padding: .8rem;
+  border-top: 1px solid var(--border);
+  background: #f8fafc;
+}
+.platform-panel {
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 15px;
+  background: var(--surface);
+}
+.platform-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: .8rem;
+  padding: .8rem;
+  background: #fff;
+}
+.platform-heading p {
+  margin: .2rem 0 0;
+  color: var(--muted);
+  font-size: .82rem;
+}
+.platform-count {
+  flex: 0 0 auto;
+  padding: .25rem .55rem;
+  border-radius: 999px;
+  color: var(--primary-dark);
+  background: var(--surface-soft);
+  font-size: .75rem;
+  font-weight: 800;
+}
+.platform-panel .route-list {
+  border-top: 1px solid var(--border);
+}
+.route-detail {
+  scroll-margin-top: 1rem;
+  border-color: rgba(10, 94, 168, .28);
+}
+.detail-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 1rem;
+  padding-bottom: .9rem;
+  border-bottom: 1px solid var(--border);
+}
+.detail-header h2 { margin-bottom: .2rem; }
+.detail-subtitle { margin: 0; color: var(--muted); }
+.inline-status {
+  margin: .9rem 0;
+  padding: .75rem .85rem;
+  border-radius: 12px;
+  color: var(--primary-dark);
+  background: var(--surface-soft);
+  font-size: .86rem;
+}
+.detail-block {
+  margin-top: 1rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--border);
+}
+.detail-block:first-of-type { border-top: 0; }
+.compact-heading { margin-bottom: .7rem; }
+.compact-heading h3 { margin: 0; font-size: 1.08rem; }
+.live-bus-list { display: grid; gap: .65rem; }
+.live-bus-card {
+  width: 100%;
+  min-height: 108px;
+  display: grid;
+  gap: .25rem;
+  padding: .85rem;
+  border: 1px solid #cfe1f1;
+  border-radius: 14px;
+  color: var(--text);
+  background: var(--surface-soft);
+  text-align: left;
+}
+.live-bus-card.selected,
+.live-bus-card:hover { border-color: var(--primary); background: #e5f1fb; }
+.live-bus-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: .6rem;
+}
+.live-status {
+  padding: .2rem .5rem;
+  border-radius: 999px;
+  color: var(--primary-dark);
+  background: #fff;
+  font-size: .73rem;
+  font-weight: 800;
+}
+.live-location { color: var(--muted); }
+.live-eta { font-size: 1rem; }
+.live-eta b { color: var(--primary-dark); font-size: 1.15rem; }
+.live-updated { color: var(--muted); font-size: .74rem; }
+.vehicle-summary {
+  display: flex;
+  justify-content: space-between;
+  gap: .75rem;
+  margin-bottom: .7rem;
+  padding: .8rem;
+  border-radius: 12px;
+  background: var(--surface-soft);
+}
+.progress-list {
+  list-style: none;
+  margin: 0;
+  padding: 0 0 0 .25rem;
+}
+.progress-item {
+  position: relative;
+  display: grid;
+  grid-template-columns: 1.25rem minmax(0, 1fr) auto;
+  gap: .65rem;
+  min-height: 64px;
+  padding: .4rem 0;
+}
+.progress-item:not(:last-child)::after {
+  content: "";
+  position: absolute;
+  left: .58rem;
+  top: 1.35rem;
+  bottom: -.25rem;
+  width: 2px;
+  background: #c7d7e5;
+}
+.progress-marker {
+  z-index: 1;
+  width: 1rem;
+  height: 1rem;
+  margin-top: .15rem;
+  border: 3px solid var(--primary);
+  border-radius: 50%;
+  background: var(--surface);
+}
+.progress-item.current .progress-marker { background: var(--primary); }
+.progress-item small { display: block; color: var(--muted); font-size: .72rem; }
+.progress-time { text-align: right; color: var(--primary-dark); font-weight: 800; white-space: nowrap; }
+.departure-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(105px, 1fr));
+  gap: .55rem;
+}
+.departure-card {
+  display: grid;
+  gap: .1rem;
+  padding: .7rem;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: #fff;
+}
+.departure-card strong { color: var(--primary-dark); font-size: 1.05rem; }
+.departure-card span { color: var(--muted); font-size: .78rem; }
+.timetable-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .45rem;
+}
+.time-chip {
+  min-width: 4.4rem;
+  padding: .48rem .55rem;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: #fff;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  font-weight: 750;
+}
+.estimate-note,
+.empty-message,
+.realtime-error p {
+  color: var(--muted);
+  font-size: .82rem;
+}
+.empty-message { margin: .4rem 0; }
+.realtime-error {
+  padding: .85rem;
+  border: 1px solid #efc2c2;
+  border-radius: 13px;
+  color: var(--danger);
+  background: #fff6f6;
+}
+.realtime-error p { margin: .3rem 0 0; }
+
+@media (max-width: 520px) {
+  .platform-heading,
+  .vehicle-summary { display: block; }
+  .platform-count { display: inline-block; margin-top: .45rem; }
+  .compact-heading { align-items: flex-start; }
+  .compact-heading .secondary-button { padding-inline: .6rem; }
+  .progress-item { grid-template-columns: 1.25rem minmax(0, 1fr); }
+  .progress-time { grid-column: 2; text-align: left; }
+  .route-button { gap: .45rem; }
+  .route-headsign { white-space: normal; }
+}

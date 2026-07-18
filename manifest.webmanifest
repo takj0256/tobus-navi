@@ -1,7 +1,7 @@
 {
   "name": "都バスナビ",
   "short_name": "都バスナビ",
-  "description": "現在地から近い都バス停留所と行き先をすばやく探すPWA",
+  "description": "都バスの停留所、時刻表、車両位置、推定到着時刻を確認するPWA",
   "lang": "ja",
   "start_url": "./",
   "scope": "./",

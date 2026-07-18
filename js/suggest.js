@@ -1,49 +1,33 @@
 import { normalizeSearchText } from "./data.js";
 
-const TYPE_PRIORITY = {
-  stop: 30,
-  route: 20,
-  destination: 10,
-};
+const TYPE_PRIORITY = { stop: 30, route: 20, destination: 10 };
 
-export function buildSuggestionIndex(stops) {
+export function buildSuggestionIndex(groups) {
   const entries = new Map();
-
   const add = (type, value, aliases = []) => {
     const displayValue = String(value || "").trim();
     if (!displayValue) return;
     const key = `${type}:${normalizeSearchText(displayValue)}`;
-    const searchText = [displayValue, ...aliases]
-      .filter(Boolean)
-      .map(normalizeSearchText)
-      .join(" ");
-
-    if (!entries.has(key)) {
-      entries.set(key, {
-        type,
-        value: displayValue,
-        searchText,
-      });
-    } else if (searchText.length > entries.get(key).searchText.length) {
-      entries.get(key).searchText = searchText;
-    }
+    const searchText = [displayValue, ...aliases].filter(Boolean).map(normalizeSearchText).join(" ");
+    if (!entries.has(key)) entries.set(key, { type, value: displayValue, searchText });
+    else if (searchText.length > entries.get(key).searchText.length) entries.get(key).searchText = searchText;
   };
 
-  for (const stop of stops || []) {
-    add("stop", stop.stop_name, [stop.stop_name_kana, stop.platform_code]);
-    for (const route of stop.routes || []) {
-      add("route", route.route_name);
-      add("destination", route.headsign);
+  for (const group of groups || []) {
+    add("stop", group.stop_name, [group.stop_name_kana]);
+    for (const platform of group.platforms || []) {
+      for (const route of platform.routes || []) {
+        add("route", route.route_name);
+        add("destination", route.headsign);
+      }
     }
   }
-
   return [...entries.values()];
 }
 
 export function suggestSearchTerms(index, rawQuery, limit = 8) {
   const query = normalizeSearchText(rawQuery);
   if (!query || limit <= 0) return [];
-
   return (index || [])
     .map((entry) => {
       const normalizedValue = normalizeSearchText(entry.value);

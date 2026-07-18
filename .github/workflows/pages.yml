@@ -35,7 +35,7 @@ jobs:
       - name: Test GTFS converter
         run: python -m unittest discover -s tests -p "test_*.py" -v
       - name: Validate production dataset
-        run: python tools/validate_dataset.py data/stops.json
+        run: python tools/validate_dataset.py data/transit-index.json
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:

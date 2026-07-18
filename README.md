@@ -1,64 +1,54 @@
-# 都バスナビ（正式データ対応・Phase 3）
+# 都バスナビ Phase 4
 
-現在地、停留所名、系統番号、行き先から、都バス停留所と系統を探して公式サイトへ移動するPWAです。
+現在地周辺の同名停留所を1枚にまとめ、上り・下りの各のりば、時刻表、走行中の車両位置、後続停留所への推定到着時刻を表示するPWAです。
 
-## 今回追加した機能
+## Phase 4の主要機能
 
-- デモボタン、デモ表示、デモデータを正式版コードから撤去
-- `meta.demo: true` のデータを起動時に拒否
+- 同じ停留所名の複数のりばを1枚のカードに統合
+- カード内で上り・下り・行き先別に表示
+- GTFS-JPの `calendar.txt` / `calendar_dates.txt` / `stop_times.txt` を利用した時刻表
+- GTFS-RT VehiclePositionのProtocol Buffersをブラウザ内で直接解析
+- 選択停留所へ向かう車両の現在位置、何停留所前、推定到着分数を表示
+- 車両選択後、その先の停留所ごとの推定到着時刻を一覧表示
+- 約20秒ごとの自動更新
 - 停留所・系統・行き先の検索サジェスト
-- サジェストのタップ選択
-- キーボードの上下キー、Enter、Escによる候補操作
-- 最近使った系統を最大8件保存・表示
-- お気に入りを停留所内の系統一覧で優先表示
-- 最近使った系統を停留所内の系統一覧で優先表示
-- GTFSデータ生成日時の表示
-- 正式データの公開前検証
-- `data/stops.json` をネットワーク優先で更新し、取得後はオフラインでも利用
+- お気に入り・最近使った系統
 
-## 重要：正式GTFSデータは同梱していません
+## 推定到着時刻について
 
-この配布物にはデモの `data/stops.json` を含めていません。
-既にGitHubリポジトリに正式な `data/stops.json` がある場合は、そのファイルを保持したまま今回の更新を上書きしてください。
+東京都交通局の公開GTFS-RTはVehiclePosition（車両位置）です。TripUpdateによる公式到着予測ではないため、本アプリでは次の方法で推定します。
 
-Ubuntuで新しく生成する場合：
+1. リアルタイム車両の `trip_id` と静的GTFS-JPの便を照合
+2. `current_stop_sequence` または `stop_id` から現在位置を決定
+3. 現在時刻と当該停留所の予定時刻との差を遅れとして計算
+4. その遅れを後続停留所の予定時刻へ加算
+
+したがって、交通状況や折返し、臨時運行などにより実際と異なる場合があります。画面では必ず「推定」と表示します。
+
+## 重要：Phase 3のデータは再生成が必要
+
+Phase 4では旧 `data/stops.json` は使用しません。正式GTFS-JPから次を生成します。
+
+- `data/transit-index.json`
+- `data/routes/*.json`
+
+```bash
+./tools/update_gtfs.sh ~/Downloads/ToeiBus-GTFS.zip
+```
+
+または：
 
 ```bash
 python3 tools/convert_gtfs.py \
   ~/Downloads/ToeiBus-GTFS.zip \
-  --output data/stops.json \
-  --pretty
-```
+  --output-dir data
 
-生成したデータを検証します。
-
-```bash
-python3 tools/validate_dataset.py data/stops.json
-```
-
-## 既存のGitHubリポジトリへ適用
-
-このZIPを展開し、現在のリポジトリへコピーします。配布物に `data/stops.json` は含まれないため、既存の正式データは削除されません。
-
-```bash
-unzip tobus-navi-pwa-phase3.zip
-rsync -av \
-  tobus-navi-pwa-phase3/ \
-  ~/path/to/tobus-navi/
-
-cd ~/path/to/tobus-navi
-```
-
-正式データが残っていることを確認します。
-
-```bash
-python3 tools/validate_dataset.py data/stops.json
+python3 tools/validate_dataset.py data/transit-index.json
 ```
 
 ## Ubuntuでローカル実行
 
 ```bash
-cd ~/path/to/tobus-navi
 python3 tools/serve.py
 ```
 
@@ -71,53 +61,40 @@ http://127.0.0.1:8000
 ## テスト
 
 ```bash
-npm run test:js
 npm run check:js
+npm run test:js
 python3 -m unittest discover -s tests -p "test_*.py" -v
-python3 tools/validate_dataset.py data/stops.json
+python3 tools/validate_dataset.py data/transit-index.json
 ```
 
-JavaScriptテストはNode.js標準の `node:test` を使用するため、npmパッケージの追加インストールは不要です。
+## リアルタイム情報
+
+初期設定は公開エンドポイントです。
+
+```text
+https://api-public.odpt.org/api/v4/gtfs/realtime/ToeiBus
+```
+
+設定ファイル：
+
+```text
+js/config.js
+```
+
+Android ChromeやGitHub PagesからCORSエラーになる場合は、`worker/` のCloudflare Workerを公開し、そのURLを `REALTIME_ENDPOINT` に設定します。
 
 ## GitHubへ反映
 
 ```bash
-git status
 git add .
-git commit -m "Add production search suggestions and recent routes"
+git commit -m "Add grouped stops timetable and realtime tracking"
 git push
 ```
 
-GitHub Actionsは次をすべて通過した場合のみGitHub Pagesへ公開します。
+GitHub ActionsはJavaScript・Pythonテストと正式データ検証に成功した場合だけ公開します。
 
-1. JavaScript単体テスト
-2. JavaScript構文確認
-3. Python単体テスト
-4. 正式停留所データ検証
-5. GitHub Pagesへのデプロイ
-
-## 検索サジェスト
-
-入力中に最大8件まで候補を表示します。
-
-- 停留所名
-- 系統番号
-- 行き先
-
-同じ停留所名、系統番号、行き先は候補内で重複させません。停留所名のよみがながGTFSに含まれている場合、ひらがな入力からも候補を表示します。
-
-## 公式サイト遷移について
-
-固定ディープリンクが未確定のため、現在は系統名と行き先をコピーして、都バス公式の系統検索画面を同じタブで開きます。検証済みURLをJSONの `official_url` に追加した場合は、そのURLを優先します。
-
-## データクレジット
+## ライセンス表示
 
 > データ提供元：東京都交通局・公共交通オープンデータ協議会（CC BY 4.0）
 
-## 次の開発候補
-
-- `calendar.txt`、`calendar_dates.txt`、`stop_times.txt`による現在運行中の系統判定
-- 停留所・系統の公式ディープリンク解析
-- 地図UI
-- GTFS-RTによる「あと何停留所・何分」の表示
-- GPS誤差と道路反対側を考慮した方面推定
+本アプリは東京都交通局の公式アプリではありません。

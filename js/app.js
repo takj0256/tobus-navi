@@ -4,57 +4,61 @@ import {
   geolocationErrorMessage,
   formatDistance,
 } from "./geo.js";
-import { loadDataset, nearbyStops, searchStops } from "./data.js";
-import { openOfficial } from "./official.js";
-import { displayHeadsign } from "./display.js";
 import {
-  buildSuggestionIndex,
-  suggestSearchTerms,
-  suggestionTypeLabel,
-} from "./suggest.js";
+  loadDataset,
+  loadRouteData,
+  nearbyStopGroups,
+  searchStopGroups,
+} from "./data.js";
+import { displayHeadsign } from "./display.js";
+import { buildSuggestionIndex, suggestSearchTerms, suggestionTypeLabel } from "./suggest.js";
+import {
+  currentTokyoDateKey,
+  formatGtfsClock,
+  formatTimestampClock,
+  getDailyTimetable,
+  getUpcomingDepartures,
+  minutesUntil,
+} from "./timetable.js";
+import {
+  buildFutureStopEstimates,
+  fetchRealtimeVehicles,
+  getApproachingVehicles,
+  realtimeStatusLabel,
+  vehicleLocationLabel,
+} from "./realtime.js";
+import { REALTIME_ENDPOINT, REALTIME_REFRESH_MS } from "./config.js";
 
-const elements = {
-  locateButton: document.querySelector("#locateButton"),
-  refreshButton: document.querySelector("#refreshButton"),
-  radiusSelect: document.querySelector("#radiusSelect"),
-  manualSearchForm: document.querySelector("#manualSearchForm"),
-  manualSearchInput: document.querySelector("#manualSearchInput"),
-  searchSuggestions: document.querySelector("#searchSuggestions"),
-  results: document.querySelector("#results"),
-  resultsList: document.querySelector("#resultsList"),
-  resultCount: document.querySelector("#resultCount"),
-  resultsTitle: document.querySelector("#results-title"),
-  resultsEyebrow: document.querySelector("#resultsEyebrow"),
-  statusPanel: document.querySelector("#statusPanel"),
-  statusTitle: document.querySelector("#statusTitle"),
-  statusMessage: document.querySelector("#statusMessage"),
-  statusIcon: document.querySelector("#statusIcon"),
-  datasetSummary: document.querySelector("#datasetSummary"),
-  toast: document.querySelector("#toast"),
-  favoritesSection: document.querySelector("#favoritesSection"),
-  favoritesList: document.querySelector("#favoritesList"),
-  clearFavoritesButton: document.querySelector("#clearFavoritesButton"),
-  recentSection: document.querySelector("#recentSection"),
-  recentList: document.querySelector("#recentList"),
-  clearRecentButton: document.querySelector("#clearRecentButton"),
-  installButton: document.querySelector("#installButton"),
-  aboutButton: document.querySelector("#aboutButton"),
-  closeAboutButton: document.querySelector("#closeAboutButton"),
-  aboutDialog: document.querySelector("#aboutDialog"),
-  datasetLabel: document.querySelector("#datasetLabel"),
-  datasetUpdatedAt: document.querySelector("#datasetUpdatedAt"),
-};
+const elements = Object.fromEntries([
+  "locateButton", "refreshButton", "radiusSelect", "manualSearchForm", "manualSearchInput",
+  "searchSuggestions", "results", "resultsList", "resultCount", "resultsEyebrow",
+  "statusPanel", "statusTitle", "statusMessage", "statusIcon", "datasetSummary", "toast",
+  "favoritesSection", "favoritesList", "clearFavoritesButton", "recentSection", "recentList",
+  "clearRecentButton", "installButton", "aboutButton", "closeAboutButton", "aboutDialog",
+  "datasetLabel", "datasetUpdatedAt", "routeDetail", "routeDetailEyebrow", "routeDetailTitle",
+  "routeDetailSubtitle", "routeDetailStatus", "closeDetailButton", "refreshRealtimeButton",
+  "liveBusList", "vehicleTrackingSection", "closeTrackingButton", "vehicleSummary",
+  "futureStopsList", "upcomingDepartures", "dailyTimetable", "timetableDate",
+].map((id) => [id, document.querySelector(`#${id}`)]));
+
+elements.resultsTitle = document.querySelector("#results-title");
 
 const state = {
-  dataset: { meta: {}, stops: [] },
+  dataset: { meta: {}, stop_groups: [], routes: {} },
   suggestionIndex: [],
   suggestions: [],
   activeSuggestionIndex: -1,
   lastPosition: null,
   deferredInstallPrompt: null,
-  currentView: { stops: [], showDistance: false },
-  favorites: loadArray("tobus-navi-favorites"),
-  recents: loadRecents(),
+  currentView: { groups: [], showDistance: false },
+  favorites: loadArray("tobus-navi-favorites-v4"),
+  recents: loadArray("tobus-navi-recents-v4"),
+  routeCache: new Map(),
+  activeSelection: null,
+  activeRouteData: null,
+  realtimeFeed: null,
+  realtimeTimer: null,
+  selectedVehicleId: null,
 };
 
 init();
@@ -64,19 +68,13 @@ async function init() {
   registerServiceWorker();
   try {
     state.dataset = await loadDataset();
-    state.suggestionIndex = buildSuggestionIndex(state.dataset.stops);
-    state.favorites = hydrateStoredRoutes(state.favorites);
-    state.recents = hydrateStoredRoutes(state.recents);
-    saveArray("tobus-navi-favorites", state.favorites);
-    saveArray("tobus-navi-recents", state.recents);
+    state.suggestionIndex = buildSuggestionIndex(state.dataset.stop_groups);
     const meta = state.dataset.meta || {};
-    const label = meta.dataset_name || "都バス停留所データ";
     const generatedAt = formatDatasetDate(meta.generated_at);
-
-    elements.datasetLabel.textContent = `${label}（${state.dataset.stops.length}停留所）`;
+    elements.datasetLabel.textContent = `${meta.dataset_name || "都バスGTFS-JP"}（${state.dataset.stop_groups.length}停留所名）`;
     elements.datasetUpdatedAt.textContent = generatedAt;
     elements.datasetSummary.textContent = `データ生成：${generatedAt}`;
-
+    hydrateStoredCollections();
     renderFavorites();
     renderRecents();
     await prepareInitialLocationSearch();
@@ -85,93 +83,67 @@ async function init() {
     setDataControlsEnabled(false);
     elements.datasetLabel.textContent = "正式データを読み込めませんでした";
     elements.datasetUpdatedAt.textContent = "未取得";
-    setStatus("error", "停留所データを利用できません", error.message);
-    elements.datasetSummary.textContent = "UbuntuでGTFS-JPを変換し、data/stops.jsonを生成してください。";
+    setStatus("error", "交通データを利用できません", error.message);
+    elements.datasetSummary.textContent = "Phase 4変換スクリプトで data/transit-index.json と data/routes/ を生成してください。";
   }
-}
-
-async function prepareInitialLocationSearch() {
-  const dataMessage = `${state.dataset.stops.length}件の停留所データを読み込みました。`;
-  const permissionState = await getGeolocationPermissionState();
-
-  if (permissionState === "granted") {
-    await locateAndSearch();
-    return;
-  }
-
-  if (permissionState === "denied") {
-    setStatus(
-      "warning",
-      "位置情報が無効です",
-      `${dataMessage} ブラウザ設定で位置情報を許可するか、検索欄を使用してください。`,
-    );
-    return;
-  }
-
-  setStatus(
-    "success",
-    "準備できました",
-    `${dataMessage} 「現在地から検索」をタップするか、停留所・系統・行き先を入力してください。`,
-  );
 }
 
 function bindEvents() {
   elements.locateButton.addEventListener("click", locateAndSearch);
   elements.refreshButton.addEventListener("click", () => {
-    if (state.lastPosition) {
-      renderNearby(state.lastPosition.coords.latitude, state.lastPosition.coords.longitude);
-    } else {
-      locateAndSearch();
-    }
+    if (state.lastPosition) renderNearby(state.lastPosition.coords.latitude, state.lastPosition.coords.longitude);
+    else locateAndSearch();
   });
   elements.radiusSelect.addEventListener("change", () => {
-    if (state.lastPosition) {
-      renderNearby(state.lastPosition.coords.latitude, state.lastPosition.coords.longitude);
-    }
+    if (state.lastPosition) renderNearby(state.lastPosition.coords.latitude, state.lastPosition.coords.longitude);
   });
-
   elements.manualSearchForm.addEventListener("submit", (event) => {
     event.preventDefault();
-    if (state.activeSuggestionIndex >= 0 && state.suggestions[state.activeSuggestionIndex]) {
-      selectSuggestion(state.activeSuggestionIndex);
-      return;
-    }
-    runManualSearch(elements.manualSearchInput.value);
+    if (state.activeSuggestionIndex >= 0) selectSuggestion(state.activeSuggestionIndex);
+    else runManualSearch(elements.manualSearchInput.value);
   });
   elements.manualSearchInput.addEventListener("input", updateSuggestions);
   elements.manualSearchInput.addEventListener("focus", updateSuggestions);
   elements.manualSearchInput.addEventListener("keydown", handleSuggestionKeydown);
-  elements.manualSearchInput.addEventListener("blur", () => {
-    window.setTimeout(hideSuggestions, 150);
-  });
+  elements.manualSearchInput.addEventListener("blur", () => window.setTimeout(hideSuggestions, 150));
 
   elements.clearFavoritesButton.addEventListener("click", () => {
     state.favorites = [];
-    saveArray("tobus-navi-favorites", state.favorites);
+    saveArray("tobus-navi-favorites-v4", state.favorites);
     renderFavorites();
-    if (state.currentView.stops.length) {
-      renderStops(state.currentView.stops, state.currentView.showDistance);
-    } else {
-      renderCurrentResultsFavorites();
-    }
+    rerenderCurrentView();
   });
   elements.clearRecentButton.addEventListener("click", () => {
     state.recents = [];
-    saveArray("tobus-navi-recents", state.recents);
-    localStorage.removeItem("tobus-navi-recent");
+    saveArray("tobus-navi-recents-v4", state.recents);
     renderRecents();
-    if (state.currentView.stops.length) {
-      renderStops(state.currentView.stops, state.currentView.showDistance);
-    }
   });
   elements.aboutButton.addEventListener("click", () => elements.aboutDialog.showModal());
   elements.closeAboutButton.addEventListener("click", () => elements.aboutDialog.close());
   elements.installButton.addEventListener("click", installPwa);
+  elements.closeDetailButton.addEventListener("click", closeRouteDetail);
+  elements.refreshRealtimeButton.addEventListener("click", () => refreshRealtime(true));
+  elements.closeTrackingButton.addEventListener("click", () => {
+    state.selectedVehicleId = null;
+    renderVehicleTracking([]);
+  });
   window.addEventListener("beforeinstallprompt", (event) => {
     event.preventDefault();
     state.deferredInstallPrompt = event;
     elements.installButton.classList.remove("hidden");
   });
+}
+
+async function prepareInitialLocationSearch() {
+  const count = state.dataset.stop_groups.length;
+  const permissionState = await getGeolocationPermissionState();
+  if (permissionState === "granted") {
+    await locateAndSearch();
+  } else if (permissionState === "denied") {
+    setStatus("warning", "位置情報が無効です", `${count}件の停留所名を読み込みました。ブラウザ設定で許可するか検索欄を使用してください。`);
+  } else {
+    setStatus("success", "準備できました", `${count}件の停留所名を読み込みました。「現在地から検索」をタップしてください。`);
+  }
 }
 
 function updateSuggestions() {
@@ -182,33 +154,19 @@ function updateSuggestions() {
 }
 
 function renderSuggestions() {
-  if (!state.suggestions.length) {
-    hideSuggestions();
-    return;
-  }
-
-  elements.searchSuggestions.innerHTML = state.suggestions.map((suggestion, index) => `
-    <button
-      id="suggestion-option-${index}"
-      class="suggestion-item"
-      type="button"
-      role="option"
-      data-suggestion-index="${index}"
-      aria-selected="${index === state.activeSuggestionIndex}"
-    >
-      <span class="suggestion-type">${escapeHtml(suggestionTypeLabel(suggestion.type))}</span>
-      <span class="suggestion-value">${escapeHtml(suggestion.value)}</span>
-    </button>
-  `).join("");
-
+  if (!state.suggestions.length) return hideSuggestions();
+  elements.searchSuggestions.innerHTML = state.suggestions.map((item, index) => `
+    <button id="suggestion-option-${index}" class="suggestion-item" type="button" role="option"
+      data-suggestion-index="${index}" aria-selected="false">
+      <span class="suggestion-type">${escapeHtml(suggestionTypeLabel(item.type))}</span>
+      <span class="suggestion-value">${escapeHtml(item.value)}</span>
+    </button>`).join("");
   elements.searchSuggestions.querySelectorAll("[data-suggestion-index]").forEach((button) => {
     button.addEventListener("pointerdown", (event) => event.preventDefault());
     button.addEventListener("click", () => selectSuggestion(Number(button.dataset.suggestionIndex)));
   });
-
   elements.searchSuggestions.classList.remove("hidden");
   elements.manualSearchInput.setAttribute("aria-expanded", "true");
-  updateActiveSuggestion();
 }
 
 function handleSuggestionKeydown(event) {
@@ -216,39 +174,31 @@ function handleSuggestionKeydown(event) {
     if (event.key === "Escape") hideSuggestions();
     return;
   }
-
   if (event.key === "ArrowDown") {
     event.preventDefault();
     state.activeSuggestionIndex = (state.activeSuggestionIndex + 1) % state.suggestions.length;
-    updateActiveSuggestion();
   } else if (event.key === "ArrowUp") {
     event.preventDefault();
-    state.activeSuggestionIndex = state.activeSuggestionIndex <= 0
-      ? state.suggestions.length - 1
-      : state.activeSuggestionIndex - 1;
-    updateActiveSuggestion();
+    state.activeSuggestionIndex = state.activeSuggestionIndex <= 0 ? state.suggestions.length - 1 : state.activeSuggestionIndex - 1;
   } else if (event.key === "Enter" && state.activeSuggestionIndex >= 0) {
     event.preventDefault();
     selectSuggestion(state.activeSuggestionIndex);
+    return;
   } else if (event.key === "Escape") {
     event.preventDefault();
     hideSuggestions();
-  }
+    return;
+  } else return;
+  updateActiveSuggestion();
 }
 
 function updateActiveSuggestion() {
   elements.searchSuggestions.querySelectorAll("[data-suggestion-index]").forEach((button, index) => {
     const active = index === state.activeSuggestionIndex;
-    button.setAttribute("aria-selected", String(active));
     button.classList.toggle("active", active);
+    button.setAttribute("aria-selected", String(active));
     if (active) button.scrollIntoView({ block: "nearest" });
   });
-
-  if (state.activeSuggestionIndex >= 0) {
-    elements.manualSearchInput.setAttribute("aria-activedescendant", `suggestion-option-${state.activeSuggestionIndex}`);
-  } else {
-    elements.manualSearchInput.removeAttribute("aria-activedescendant");
-  }
 }
 
 function selectSuggestion(index) {
@@ -265,35 +215,22 @@ function hideSuggestions() {
   elements.searchSuggestions.innerHTML = "";
   elements.searchSuggestions.classList.add("hidden");
   elements.manualSearchInput.setAttribute("aria-expanded", "false");
-  elements.manualSearchInput.removeAttribute("aria-activedescendant");
 }
 
 function runManualSearch(rawQuery, sourceLabel = "キーワード検索") {
   const query = String(rawQuery || "").trim();
-  if (!query) {
-    showToast("停留所名、系統番号、または行き先を入力してください。");
-    return;
-  }
-
-  const matches = searchStops(state.dataset.stops, query);
+  if (!query) return showToast("停留所名、系統番号、または行き先を入力してください。");
+  const matches = searchStopGroups(state.dataset.stop_groups, query);
   elements.resultsTitle.textContent = `「${query}」の検索結果`;
   elements.resultsEyebrow.textContent = sourceLabel;
-  renderStops(matches, false);
-  setStatus(
-    matches.length ? "success" : "warning",
-    matches.length ? "検索しました" : "該当なし",
-    matches.length
-      ? `${matches.length}件の停留所候補を表示しています。`
-      : "別の停留所名、系統番号、または行き先で検索してください。",
-  );
+  renderStopGroups(matches, false);
+  setStatus(matches.length ? "success" : "warning", matches.length ? "検索しました" : "該当なし",
+    matches.length ? `${matches.length}件の停留所名を表示しています。` : "別の検索語を入力してください。");
   elements.results.scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
 async function locateAndSearch() {
-  if (!state.dataset.stops.length) {
-    setStatus("warning", "停留所データがありません", "正式GTFS-JPから停留所データを生成してください。");
-    return;
-  }
+  if (!state.dataset.stop_groups.length) return;
   setBusy(true);
   setStatus("loading", "現在地を取得しています", "位置情報の許可画面が表示されたら「許可」を選択してください。");
   try {
@@ -301,274 +238,347 @@ async function locateAndSearch() {
     state.lastPosition = position;
     renderNearby(position.coords.latitude, position.coords.longitude);
   } catch (error) {
-    console.error(error);
     setStatus("error", "現在地を取得できませんでした", geolocationErrorMessage(error));
   } finally {
     setBusy(false);
   }
 }
 
-function renderNearby(latitude, longitude, label = "現在地") {
+function renderNearby(latitude, longitude) {
   const radius = Number(elements.radiusSelect.value);
-  const matches = nearbyStops(state.dataset.stops, latitude, longitude, radius);
-  elements.resultsTitle.textContent = `${label}から近い停留所`;
+  const matches = nearbyStopGroups(state.dataset.stop_groups, latitude, longitude, radius);
+  elements.resultsTitle.textContent = "現在地から近い停留所";
   elements.resultsEyebrow.textContent = `半径 ${radius >= 1000 ? `${radius / 1000} km` : `${radius} m`}`;
-  renderStops(matches, true);
-  setStatus(
-    matches.length ? "success" : "warning",
-    matches.length ? "周辺検索が完了しました" : "近くに候補がありません",
-    matches.length
-      ? `精度 約${Math.round(state.lastPosition?.coords?.accuracy || 0)}m・${matches.length}件を距離順に表示しています。`
-      : "検索半径を広げるか、検索欄を使用してください。",
-  );
+  renderStopGroups(matches, true);
+  setStatus(matches.length ? "success" : "warning", matches.length ? "周辺検索が完了しました" : "近くに候補がありません",
+    matches.length ? `同名の上り・下りをまとめ、${matches.length}件を距離順に表示しています。` : "検索半径を広げてください。");
 }
 
-function renderStops(stops, showDistance) {
-  state.currentView = { stops, showDistance };
-  elements.resultCount.textContent = `${stops.length}件`;
-  if (!stops.length) {
+function renderStopGroups(groups, showDistance) {
+  state.currentView = { groups, showDistance };
+  elements.resultCount.textContent = `${groups.length}件`;
+  if (!groups.length) {
     elements.resultsList.innerHTML = `<div class="empty-state"><span aria-hidden="true">🚌</span><p>表示できる停留所がありません。</p></div>`;
     return;
   }
 
-  elements.resultsList.innerHTML = stops.map((stop) => {
-    const routes = deduplicateRoutes(stop.stop_id, stop.routes || []);
-    return `
-      <article class="stop-card" data-stop-id="${escapeHtml(stop.stop_id)}">
-        <div class="stop-header">
-          <div class="stop-title-row">
-            <h3 class="stop-title">${escapeHtml(stop.stop_name)}</h3>
-            ${showDistance ? `<span class="distance">${formatDistance(stop.distance)}</span>` : ""}
-          </div>
-          <div class="stop-meta">
-            ${stop.platform_code ? `<span class="meta-chip">${escapeHtml(stop.platform_code)}</span>` : ""}
-            <span class="meta-chip">${routes.length}系統・方面</span>
-          </div>
+  elements.resultsList.innerHTML = groups.map((group) => {
+    const platformCount = group.platforms?.length || 0;
+    return `<article class="stop-card stop-group-card" data-group-id="${escapeHtml(group.group_id)}">
+      <div class="stop-header">
+        <div class="stop-title-row">
+          <h3 class="stop-title">${escapeHtml(group.stop_name)}</h3>
+          ${showDistance ? `<span class="distance">${formatDistance(group.distance)}</span>` : ""}
         </div>
-        <div class="route-list">
-          ${routes.length
-            ? routes.map((route) => routeRow(stop, route)).join("")
-            : `<p>この停留所の系統情報がありません。</p>`}
-        </div>
-      </article>`;
+        <div class="stop-meta"><span class="meta-chip">${platformCount}のりば</span><span class="meta-chip">上り・下りをまとめて表示</span></div>
+      </div>
+      <div class="platform-list">${(group.platforms || []).map((platform, index) => platformPanel(group, platform, index)).join("")}</div>
+    </article>`;
   }).join("");
 
   elements.resultsList.querySelectorAll("[data-route-action]").forEach((button) => {
-    button.addEventListener("click", () => {
-      const stop = findStop(button.dataset.stopId);
-      const route = findRoute(stop, button.dataset.routeKey);
-      recordRecent(stop, route);
-      openOfficial(stop, route, showToast);
-    });
+    button.addEventListener("click", () => openRouteDetail(button.dataset.groupId, button.dataset.stopId, button.dataset.routeKey));
   });
   elements.resultsList.querySelectorAll("[data-favorite-action]").forEach((button) => {
-    button.addEventListener("click", () => toggleFavorite(button.dataset.stopId, button.dataset.routeKey));
+    button.addEventListener("click", () => toggleFavorite(button.dataset.groupId, button.dataset.stopId, button.dataset.routeKey));
   });
 }
 
-function routeRow(stop, route) {
+function platformPanel(group, platform, index) {
+  const routes = deduplicateRoutes(platform.routes || []);
+  const destinationLabels = [...new Set(routes.map((route) => displayHeadsign(route.headsign)))].slice(0, 3);
+  const platformLabel = platform.platform_code || `${index + 1}番目ののりば`;
+  return `<section class="platform-panel">
+    <div class="platform-heading">
+      <div><strong>${escapeHtml(platformLabel)}</strong><p>${escapeHtml(destinationLabels.join("・") || "行き先情報なし")}</p></div>
+      <span class="platform-count">${routes.length}方面</span>
+    </div>
+    <div class="route-list">${routes.map((route) => routeRow(group, platform, route)).join("") || "<p>系統情報がありません。</p>"}</div>
+  </section>`;
+}
+
+function routeRow(group, platform, route) {
   const routeKey = createRouteKey(route);
-  const favorite = isFavorite(stop.stop_id, routeKey);
-  const recent = isRecent(stop.stop_id, routeKey);
+  const favorite = isFavorite(platform.stop_id, routeKey);
+  const recent = isRecent(platform.stop_id, routeKey);
   return `<div class="route-row ${favorite ? "priority-route" : ""}">
-    <button class="route-button" type="button" data-route-action data-stop-id="${escapeHtml(stop.stop_id)}" data-route-key="${escapeHtml(routeKey)}">
+    <button class="route-button" type="button" data-route-action data-group-id="${escapeHtml(group.group_id)}"
+      data-stop-id="${escapeHtml(platform.stop_id)}" data-route-key="${escapeHtml(routeKey)}">
       <span class="route-name">${escapeHtml(route.route_name || "系統")}</span>
       <span class="route-headsign">${escapeHtml(displayHeadsign(route.headsign))}</span>
       ${favorite ? `<span class="route-state">お気に入り</span>` : recent ? `<span class="route-state">最近</span>` : ""}
-      <span aria-hidden="true">↗</span>
+      <span aria-hidden="true">›</span>
     </button>
-    <button class="favorite-button" type="button" data-favorite-action data-stop-id="${escapeHtml(stop.stop_id)}" data-route-key="${escapeHtml(routeKey)}" aria-label="お気に入り${favorite ? "から解除" : "に追加"}" aria-pressed="${favorite}">★</button>
+    <button class="favorite-button" type="button" data-favorite-action data-group-id="${escapeHtml(group.group_id)}"
+      data-stop-id="${escapeHtml(platform.stop_id)}" data-route-key="${escapeHtml(routeKey)}"
+      aria-label="お気に入り${favorite ? "から解除" : "に追加"}" aria-pressed="${favorite}">★</button>
   </div>`;
 }
 
-function toggleFavorite(stopId, routeKey) {
+async function openRouteDetail(groupId, stopId, routeKey) {
+  const selection = resolveSelection(groupId, stopId, routeKey);
+  if (!selection) return showToast("選択した系統を見つけられませんでした。");
+  clearRealtimeTimer();
+  state.activeSelection = selection;
+  state.selectedVehicleId = null;
+  state.activeRouteData = null;
+  recordRecent(selection);
+  renderFavorites();
+  renderRecents();
+  rerenderCurrentView();
+
+  elements.routeDetail.classList.remove("hidden");
+  elements.routeDetailEyebrow.textContent = `${selection.platform.platform_code || "のりば"}・運行情報`;
+  elements.routeDetailTitle.textContent = `${selection.route.route_name} ${displayHeadsign(selection.route.headsign)}`;
+  elements.routeDetailSubtitle.textContent = `${selection.group.stop_name}から乗車`;
+  elements.routeDetailStatus.textContent = "時刻表データを読み込んでいます…";
+  elements.liveBusList.innerHTML = loadingMarkup("リアルタイム情報を準備しています");
+  elements.upcomingDepartures.innerHTML = loadingMarkup("発車予定を計算しています");
+  elements.dailyTimetable.innerHTML = "";
+  renderVehicleTracking([]);
+  elements.routeDetail.scrollIntoView({ behavior: "smooth", block: "start" });
+
+  try {
+    state.activeRouteData = await getRouteData(selection.route.route_file);
+    renderStaticSchedule();
+    await refreshRealtime(false);
+    state.realtimeTimer = window.setInterval(() => refreshRealtime(false), REALTIME_REFRESH_MS);
+  } catch (error) {
+    console.error(error);
+    elements.routeDetailStatus.textContent = error.message;
+    elements.liveBusList.innerHTML = errorMarkup(error.message);
+  }
+}
+
+function renderStaticSchedule() {
+  const selection = selectionForSchedule();
+  const now = new Date();
+  const upcoming = getUpcomingDepartures(state.activeRouteData, selection, now, 12);
+  const daily = getDailyTimetable(state.activeRouteData, selection, currentTokyoDateKey(now));
+  elements.routeDetailStatus.textContent = `${state.activeRouteData.route.route_name}の正式GTFS-JP時刻表を表示しています。`;
+  elements.timetableDate.textContent = new Intl.DateTimeFormat("ja-JP", { timeZone: "Asia/Tokyo", month: "numeric", day: "numeric", weekday: "short" }).format(now);
+
+  elements.upcomingDepartures.innerHTML = upcoming.length ? upcoming.map((departure) => {
+    const mins = minutesUntil(departure.departure_ms, now.getTime());
+    return `<div class="departure-card"><strong>${formatTimestampClock(departure.departure_ms)}</strong><span>${mins === 0 ? "まもなく" : `あと${mins}分`}</span></div>`;
+  }).join("") : `<p class="empty-message">この先30時間以内の発車予定がありません。</p>`;
+
+  elements.dailyTimetable.innerHTML = daily.length ? daily.map((departure) => (
+    `<span class="time-chip">${formatGtfsClock(departure.scheduled_seconds)}</span>`
+  )).join("") : `<p class="empty-message">本日の運行予定がありません。</p>`;
+}
+
+async function refreshRealtime(userRequested) {
+  if (!state.activeSelection || !state.activeRouteData) return;
+  elements.refreshRealtimeButton.disabled = true;
+  if (userRequested) elements.routeDetailStatus.textContent = "車両位置を更新しています…";
+  try {
+    state.realtimeFeed = await fetchRealtimeVehicles(REALTIME_ENDPOINT);
+    renderRealtime();
+  } catch (error) {
+    console.error(error);
+    elements.routeDetailStatus.textContent = "リアルタイム情報を取得できませんでした。時刻表は引き続き利用できます。";
+    elements.liveBusList.innerHTML = `<div class="realtime-error"><strong>車両位置を取得できません</strong><p>${escapeHtml(error.message)}</p><p>ブラウザのCORS制約が原因の場合は同梱のCloudflare Workerを設定してください。</p></div>`;
+  } finally {
+    elements.refreshRealtimeButton.disabled = false;
+  }
+}
+
+function renderRealtime() {
+  const selection = selectionForSchedule();
+  const vehicles = getApproachingVehicles(state.activeRouteData, selection, state.realtimeFeed, Date.now());
+  const feedTime = state.realtimeFeed.timestamp ? formatTimestampClock(state.realtimeFeed.timestamp * 1000) : "不明";
+  elements.routeDetailStatus.textContent = `車両位置 ${vehicles.length}台・最終更新 ${feedTime}`;
+
+  if (!vehicles.length) {
+    elements.liveBusList.innerHTML = `<p class="empty-message">現在、この停留所へ向かう車両をGTFS-RT上で確認できません。予定時刻表をご利用ください。</p>`;
+    renderVehicleTracking([]);
+    return;
+  }
+
+  elements.liveBusList.innerHTML = vehicles.map((item, index) => {
+    const vehicleId = vehicleKey(item.vehicle);
+    const label = item.vehicle.vehicle?.label || item.vehicle.vehicle?.id || `バス${index + 1}`;
+    return `<button class="live-bus-card ${vehicleId === state.selectedVehicleId ? "selected" : ""}" type="button" data-vehicle-id="${escapeHtml(vehicleId)}">
+      <span class="live-bus-top"><strong>${escapeHtml(label)}</strong><span class="live-status">${escapeHtml(realtimeStatusLabel(item.vehicle.currentStatus))}</span></span>
+      <span class="live-location">${escapeHtml(item.currentLabel)}</span>
+      <span class="live-eta"><b>${item.minutes === 0 ? "まもなく" : `約${item.minutes}分`}</b>・${item.stopsAway}停留所前</span>
+      <span class="live-updated">位置更新 ${escapeHtml(item.updatedAt)}　詳細を見る ›</span>
+    </button>`;
+  }).join("");
+
+  elements.liveBusList.querySelectorAll("[data-vehicle-id]").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.selectedVehicleId = button.dataset.vehicleId;
+      renderRealtime();
+    });
+  });
+
+  if (state.selectedVehicleId) renderVehicleTracking(vehicles);
+}
+
+function renderVehicleTracking(vehicles) {
+  if (!state.selectedVehicleId || !vehicles.length) {
+    elements.vehicleTrackingSection.classList.add("hidden");
+    elements.futureStopsList.innerHTML = "";
+    return;
+  }
+  const selected = vehicles.find((item) => vehicleKey(item.vehicle) === state.selectedVehicleId);
+  if (!selected) {
+    state.selectedVehicleId = null;
+    elements.vehicleTrackingSection.classList.add("hidden");
+    return;
+  }
+
+  const future = buildFutureStopEstimates(selected.vehicle, selected.trip, state.activeRouteData, Date.now(), 18);
+  const label = selected.vehicle.vehicle?.label || selected.vehicle.vehicle?.id || "選択したバス";
+  elements.vehicleTrackingSection.classList.remove("hidden");
+  elements.vehicleSummary.innerHTML = `<strong>${escapeHtml(label)}</strong><span>${escapeHtml(vehicleLocationLabel(selected.vehicle, selected.trip, state.activeRouteData))}</span>`;
+  elements.futureStopsList.innerHTML = future.map((stop) => `
+    <li class="progress-item ${stop.isCurrent ? "current" : ""}">
+      <span class="progress-marker" aria-hidden="true"></span>
+      <div><strong>${escapeHtml(stop.stop_name)}</strong>${stop.platform_code ? `<small>${escapeHtml(stop.platform_code)}</small>` : ""}</div>
+      <span class="progress-time">${stop.minutes === 0 ? "現在付近" : `約${stop.minutes}分`}<small>${formatTimestampClock(stop.eta_ms)}頃</small></span>
+    </li>`).join("");
+}
+
+function closeRouteDetail() {
+  clearRealtimeTimer();
+  state.activeSelection = null;
+  state.activeRouteData = null;
+  state.selectedVehicleId = null;
+  elements.routeDetail.classList.add("hidden");
+}
+
+function clearRealtimeTimer() {
+  if (state.realtimeTimer) window.clearInterval(state.realtimeTimer);
+  state.realtimeTimer = null;
+}
+
+function selectionForSchedule() {
+  const { platform, route } = state.activeSelection;
+  return { stop_id: platform.stop_id, headsign: route.headsign, direction_id: route.direction_id };
+}
+
+async function getRouteData(routeFile) {
+  if (!state.routeCache.has(routeFile)) state.routeCache.set(routeFile, loadRouteData(routeFile));
+  return state.routeCache.get(routeFile);
+}
+
+function resolveSelection(groupId, stopId, routeKey) {
+  const group = state.dataset.stop_groups.find((item) => item.group_id === groupId);
+  const platform = group?.platforms?.find((item) => item.stop_id === stopId);
+  const route = platform?.routes?.find((item) => createRouteKey(item) === routeKey);
+  return group && platform && route ? { group, platform, route, routeKey } : null;
+}
+
+function toggleFavorite(groupId, stopId, routeKey) {
   const index = state.favorites.findIndex((item) => item.stop_id === stopId && item.route_key === routeKey);
   if (index >= 0) {
     state.favorites.splice(index, 1);
     showToast("お気に入りから解除しました。");
   } else {
-    const stop = findStop(stopId);
-    const route = findRoute(stop, routeKey);
-    if (!stop || !route) return;
-    state.favorites.unshift(createStoredRoute(stop, route));
+    const selection = resolveSelection(groupId, stopId, routeKey);
+    if (!selection) return;
+    state.favorites.unshift(storedSelection(selection));
     state.favorites = state.favorites.slice(0, 20);
     showToast("お気に入りに追加しました。");
   }
-  saveArray("tobus-navi-favorites", state.favorites);
+  saveArray("tobus-navi-favorites-v4", state.favorites);
   renderFavorites();
-  if (state.currentView.stops.length) {
-    renderStops(state.currentView.stops, state.currentView.showDistance);
-  } else {
-    renderCurrentResultsFavorites();
-  }
+  rerenderCurrentView();
+}
+
+function recordRecent(selection) {
+  const item = storedSelection(selection);
+  state.recents = [item, ...state.recents.filter((existing) => !(existing.stop_id === item.stop_id && existing.route_key === item.route_key))].slice(0, 8);
+  saveArray("tobus-navi-recents-v4", state.recents);
+}
+
+function storedSelection(selection) {
+  return {
+    group_id: selection.group.group_id,
+    stop_name: selection.group.stop_name,
+    stop_id: selection.platform.stop_id,
+    platform_code: selection.platform.platform_code,
+    route_key: selection.routeKey || createRouteKey(selection.route),
+    route_id: selection.route.route_id,
+    route_file: selection.route.route_file,
+    route_name: selection.route.route_name,
+    headsign: selection.route.headsign,
+    direction_id: selection.route.direction_id,
+  };
+}
+
+function hydrateStoredCollections() {
+  const valid = (item) => Boolean(resolveSelection(item.group_id, item.stop_id, item.route_key));
+  state.favorites = state.favorites.filter(valid);
+  state.recents = state.recents.filter(valid);
+  saveArray("tobus-navi-favorites-v4", state.favorites);
+  saveArray("tobus-navi-recents-v4", state.recents);
 }
 
 function renderFavorites() {
   elements.favoritesSection.classList.toggle("hidden", state.favorites.length === 0);
-  elements.favoritesList.innerHTML = state.favorites.map((item) => `
-    <div class="favorite-card">
-      ${storedRouteButton(item, "data-favorite-open")}
-      <button class="favorite-button" type="button" data-favorite-remove data-stop-id="${escapeHtml(item.stop_id)}" data-route-key="${escapeHtml(item.route_key)}" aria-label="お気に入りから解除" aria-pressed="true">★</button>
-    </div>`).join("");
-
-  elements.favoritesList.querySelectorAll("[data-favorite-open]").forEach((button) => {
-    button.addEventListener("click", () => openStoredRoute(button.dataset.stopId, button.dataset.routeKey, state.favorites));
-  });
-  elements.favoritesList.querySelectorAll("[data-favorite-remove]").forEach((button) => {
-    button.addEventListener("click", () => toggleFavorite(button.dataset.stopId, button.dataset.routeKey));
-  });
+  elements.favoritesList.innerHTML = state.favorites.map((item) => storedRouteCard(item, true)).join("");
+  bindStoredRouteButtons(elements.favoritesList);
 }
 
 function renderRecents() {
   elements.recentSection.classList.toggle("hidden", state.recents.length === 0);
-  elements.recentList.innerHTML = state.recents.map((item) => `
-    <div class="favorite-card">
-      ${storedRouteButton(item, "data-recent-open")}
-    </div>`).join("");
+  elements.recentList.innerHTML = state.recents.map((item) => storedRouteCard(item, false)).join("");
+  bindStoredRouteButtons(elements.recentList);
+}
 
-  elements.recentList.querySelectorAll("[data-recent-open]").forEach((button) => {
-    button.addEventListener("click", () => openStoredRoute(button.dataset.stopId, button.dataset.routeKey, state.recents));
+function storedRouteCard(item, removable) {
+  return `<div class="favorite-card">
+    <button class="route-button" type="button" data-stored-open data-group-id="${escapeHtml(item.group_id)}" data-stop-id="${escapeHtml(item.stop_id)}" data-route-key="${escapeHtml(item.route_key)}">
+      <span class="route-name">${escapeHtml(item.route_name)}</span><span class="route-headsign">${escapeHtml(item.stop_name)} → ${escapeHtml(displayHeadsign(item.headsign))}</span><span>›</span>
+    </button>
+    ${removable ? `<button class="favorite-button" type="button" data-stored-remove data-group-id="${escapeHtml(item.group_id)}" data-stop-id="${escapeHtml(item.stop_id)}" data-route-key="${escapeHtml(item.route_key)}" aria-label="お気に入りから解除">★</button>` : ""}
+  </div>`;
+}
+
+function bindStoredRouteButtons(container) {
+  container.querySelectorAll("[data-stored-open]").forEach((button) => button.addEventListener("click", () => openRouteDetail(button.dataset.groupId, button.dataset.stopId, button.dataset.routeKey)));
+  container.querySelectorAll("[data-stored-remove]").forEach((button) => button.addEventListener("click", () => toggleFavorite(button.dataset.groupId, button.dataset.stopId, button.dataset.routeKey)));
+}
+
+function rerenderCurrentView() {
+  if (state.currentView.groups.length) renderStopGroups(state.currentView.groups, state.currentView.showDistance);
+}
+
+function deduplicateRoutes(routes) {
+  const unique = new Map();
+  for (const route of routes) unique.set(createRouteKey(route), route);
+  return [...unique.values()].sort((a, b) => {
+    const favoriteDifference = Number(isFavorite("", createRouteKey(b))) - Number(isFavorite("", createRouteKey(a)));
+    return favoriteDifference || String(a.route_name).localeCompare(String(b.route_name), "ja") || String(a.headsign).localeCompare(String(b.headsign), "ja");
   });
-}
-
-function storedRouteButton(item, dataAttribute) {
-  return `<button class="route-button" type="button" ${dataAttribute} data-stop-id="${escapeHtml(item.stop_id)}" data-route-key="${escapeHtml(item.route_key)}">
-    <span class="route-name">${escapeHtml(item.route_name || "系統")}</span>
-    <span class="route-headsign">${escapeHtml(item.stop_name)} → ${escapeHtml(displayHeadsign(item.headsign))}</span>
-    <span aria-hidden="true">↗</span>
-  </button>`;
-}
-
-function openStoredRoute(stopId, routeKey, collection) {
-  const stored = collection.find((item) => item.stop_id === stopId && item.route_key === routeKey);
-  const stop = findStop(stopId) || stored;
-  const route = findRoute(stop, routeKey) || stored;
-  recordRecent(stop, route);
-  openOfficial(stop, route, showToast);
-}
-
-function renderCurrentResultsFavorites() {
-  elements.resultsList.querySelectorAll("[data-favorite-action]").forEach((button) => {
-    const favorite = isFavorite(button.dataset.stopId, button.dataset.routeKey);
-    button.setAttribute("aria-pressed", String(favorite));
-    button.setAttribute("aria-label", `お気に入り${favorite ? "から解除" : "に追加"}`);
-  });
-}
-
-function findStop(stopId) {
-  return state.dataset.stops.find((stop) => String(stop.stop_id) === String(stopId));
-}
-
-function findRoute(stop, routeKey) {
-  return stop?.routes?.find((route) => createRouteKey(route) === routeKey);
 }
 
 function createRouteKey(route) {
-  return [route?.route_id || "", route?.route_name || "", route?.headsign || "", route?.direction_id ?? ""].join("|");
-}
-
-function deduplicateRoutes(stopId, routes) {
-  const seen = new Set();
-  return routes.filter((route) => {
-    const key = createRouteKey(route);
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  }).sort((a, b) => {
-    const keyA = createRouteKey(a);
-    const keyB = createRouteKey(b);
-    const favoriteDifference = Number(isFavorite(stopId, keyB)) - Number(isFavorite(stopId, keyA));
-    if (favoriteDifference) return favoriteDifference;
-    const recentDifference = recentRank(stopId, keyA) - recentRank(stopId, keyB);
-    if (recentDifference) return recentDifference;
-    return String(a.route_name).localeCompare(String(b.route_name), "ja")
-      || String(a.headsign).localeCompare(String(b.headsign), "ja");
-  });
+  return [route.route_id || "", route.headsign || "", route.direction_id ?? ""].join("|");
 }
 
 function isFavorite(stopId, routeKey) {
-  return state.favorites.some((item) => item.stop_id === stopId && item.route_key === routeKey);
+  return state.favorites.some((item) => (stopId ? item.stop_id === stopId : true) && item.route_key === routeKey);
 }
 
 function isRecent(stopId, routeKey) {
   return state.recents.some((item) => item.stop_id === stopId && item.route_key === routeKey);
 }
 
-function recentRank(stopId, routeKey) {
-  const index = state.recents.findIndex((item) => item.stop_id === stopId && item.route_key === routeKey);
-  return index < 0 ? Number.MAX_SAFE_INTEGER : index;
+function vehicleKey(vehicle) {
+  return vehicle.vehicle?.id || vehicle.entityId || `${vehicle.trip?.tripId}-${vehicle.currentStopSequence}`;
 }
 
-function createStoredRoute(stop, route) {
-  return {
-    stop_id: stop.stop_id,
-    stop_name: stop.stop_name,
-    platform_code: stop.platform_code || "",
-    route_key: createRouteKey(route),
-    route_id: route.route_id || "",
-    route_name: route.route_name || "",
-    headsign: route.headsign || "",
-    direction_id: route.direction_id ?? "",
-    official_url: route.official_url || stop.official_url || "",
-    at: Date.now(),
-  };
+function loadingMarkup(message) {
+  return `<p class="empty-message">${escapeHtml(message)}…</p>`;
 }
 
-function recordRecent(stop, route) {
-  if (!stop || !route) return;
-  const item = createStoredRoute(stop, route);
-  state.recents = state.recents.filter((recent) => !(recent.stop_id === item.stop_id && recent.route_key === item.route_key));
-  state.recents.unshift(item);
-  state.recents = state.recents.slice(0, 8);
-  saveArray("tobus-navi-recents", state.recents);
-  localStorage.removeItem("tobus-navi-recent");
-  renderRecents();
-}
-
-function hydrateStoredRoutes(items) {
-  return (items || []).map((item) => {
-    const stop = findStop(item.stop_id);
-    const route = findRoute(stop, item.route_key);
-    if (!stop || !route) return item;
-    return { ...createStoredRoute(stop, route), at: item.at || Date.now() };
-  }).filter((item) => item.stop_id && item.route_key);
-}
-
-function loadRecents() {
-  const current = loadArray("tobus-navi-recents");
-  if (current.length) return current;
-  try {
-    const old = JSON.parse(localStorage.getItem("tobus-navi-recent") || "null");
-    return old && old.stop_id ? [old] : [];
-  } catch {
-    return [];
-  }
-}
-
-function loadArray(key) {
-  try {
-    const value = JSON.parse(localStorage.getItem(key) || "[]");
-    return Array.isArray(value) ? value : [];
-  } catch {
-    return [];
-  }
-}
-
-function saveArray(key, value) {
-  localStorage.setItem(key, JSON.stringify(value));
-}
-
-function formatDatasetDate(value) {
-  if (!value) return "不明";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return String(value);
-  return new Intl.DateTimeFormat("ja-JP", {
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-  }).format(date);
+function errorMarkup(message) {
+  return `<div class="realtime-error"><strong>読み込みに失敗しました</strong><p>${escapeHtml(message)}</p></div>`;
 }
 
 function setStatus(stateName, title, message) {
@@ -600,14 +610,24 @@ function showToast(message) {
   toastTimer = setTimeout(() => elements.toast.classList.remove("show"), 4200);
 }
 
+function loadArray(key) {
+  try { const value = JSON.parse(localStorage.getItem(key) || "[]"); return Array.isArray(value) ? value : []; }
+  catch { return []; }
+}
+
+function saveArray(key, value) {
+  localStorage.setItem(key, JSON.stringify(value));
+}
+
+function formatDatasetDate(value) {
+  if (!value) return "不明";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value);
+  return new Intl.DateTimeFormat("ja-JP", { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }).format(date);
+}
+
 function escapeHtml(value = "") {
-  return String(value).replace(/[&<>'"]/g, (char) => ({
-    "&": "&amp;",
-    "<": "&lt;",
-    ">": "&gt;",
-    "'": "&#39;",
-    '"': "&quot;",
-  })[char]);
+  return String(value).replace(/[&<>'"]/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" })[char]);
 }
 
 async function installPwa() {
@@ -619,7 +639,5 @@ async function installPwa() {
 }
 
 function registerServiceWorker() {
-  if ("serviceWorker" in navigator) {
-    window.addEventListener("load", () => navigator.serviceWorker.register("./sw.js").catch(console.error));
-  }
+  if ("serviceWorker" in navigator) navigator.serviceWorker.register("./sw.js").catch(console.error);
 }

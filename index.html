@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#0a5ea8">
-  <meta name="description" content="現在地から近い都バス停留所と行き先をすばやく探すPWA">
+  <meta name="description" content="現在地から都バスの停留所、時刻表、走行位置、推定到着時刻を確認するPWA">
   <title>都バスナビ</title>
   <link rel="manifest" href="./manifest.webmanifest">
   <link rel="icon" href="./icons/icon-192.png">
@@ -16,7 +16,7 @@
 
   <header class="app-header">
     <div>
-      <p class="eyebrow">現在地からすぐ探せる</p>
+      <p class="eyebrow">現在地・時刻表・走行位置</p>
       <h1>都バスナビ</h1>
     </div>
     <button id="installButton" class="ghost-button hidden" type="button">ホームに追加</button>
@@ -26,13 +26,10 @@
     <section class="hero-card" aria-labelledby="search-title">
       <div class="hero-copy">
         <h2 id="search-title">近くの停留所を探す</h2>
-        <p>位置情報は端末内でのみ使用し、外部へ送信しません。</p>
+        <p>同じ名前の上り・下り停留所を1枚にまとめて表示します。</p>
       </div>
 
-      <button id="locateButton" class="primary-button" type="button">
-        <span aria-hidden="true">◎</span>
-        現在地から検索
-      </button>
+      <button id="locateButton" class="primary-button" type="button">◎ 現在地から検索</button>
 
       <div class="search-options">
         <label for="radiusSelect">検索半径</label>
@@ -51,16 +48,9 @@
         <label for="manualSearchInput">停留所・系統・行き先から探す</label>
         <div class="suggestion-anchor">
           <div class="input-row">
-            <input
-              id="manualSearchInput"
-              type="search"
-              autocomplete="off"
-              placeholder="例：新宿駅、都01、渋谷駅前"
-              maxlength="50"
-              aria-autocomplete="list"
-              aria-controls="searchSuggestions"
-              aria-expanded="false"
-            >
+            <input id="manualSearchInput" type="search" autocomplete="off"
+              placeholder="例：新宿駅、都01、渋谷駅前" maxlength="50"
+              aria-autocomplete="list" aria-controls="searchSuggestions" aria-expanded="false">
             <button class="secondary-button" type="submit">検索</button>
           </div>
           <div id="searchSuggestions" class="suggestion-list hidden" role="listbox" aria-label="検索候補"></div>
@@ -79,10 +69,7 @@
 
     <section id="favoritesSection" class="content-section hidden" aria-labelledby="favorites-title">
       <div class="section-heading">
-        <div>
-          <p class="eyebrow">すぐ開く</p>
-          <h2 id="favorites-title">お気に入り</h2>
-        </div>
+        <div><p class="eyebrow">すぐ開く</p><h2 id="favorites-title">お気に入り</h2></div>
         <button id="clearFavoritesButton" class="text-button danger" type="button">すべて解除</button>
       </div>
       <div id="favoritesList" class="route-grid"></div>
@@ -90,10 +77,7 @@
 
     <section id="recentSection" class="content-section hidden" aria-labelledby="recent-title">
       <div class="section-heading">
-        <div>
-          <p class="eyebrow">最近選択した系統</p>
-          <h2 id="recent-title">最近使ったもの</h2>
-        </div>
+        <div><p class="eyebrow">最近選択した系統</p><h2 id="recent-title">最近使ったもの</h2></div>
         <button id="clearRecentButton" class="text-button danger" type="button">履歴を消去</button>
       </div>
       <div id="recentList" class="route-grid"></div>
@@ -101,18 +85,59 @@
 
     <section id="results" class="content-section" aria-labelledby="results-title">
       <div class="section-heading">
-        <div>
-          <p id="resultsEyebrow" class="eyebrow">検索結果</p>
-          <h2 id="results-title">周辺の停留所</h2>
-        </div>
+        <div><p id="resultsEyebrow" class="eyebrow">検索結果</p><h2 id="results-title">周辺の停留所</h2></div>
         <span id="resultCount" class="count-badge">0件</span>
       </div>
       <div id="resultsList" class="results-list">
-        <div class="empty-state">
-          <span aria-hidden="true">🚌</span>
-          <p>現在地を取得するか、停留所・系統・行き先を入力してください。</p>
-        </div>
+        <div class="empty-state"><span aria-hidden="true">🚌</span><p>現在地を取得するか、検索語を入力してください。</p></div>
       </div>
+    </section>
+
+    <section id="routeDetail" class="content-section route-detail hidden" aria-labelledby="routeDetailTitle">
+      <div class="detail-header">
+        <div>
+          <p id="routeDetailEyebrow" class="eyebrow">運行情報</p>
+          <h2 id="routeDetailTitle">系統を選択してください</h2>
+          <p id="routeDetailSubtitle" class="detail-subtitle"></p>
+        </div>
+        <button id="closeDetailButton" class="icon-button" type="button" aria-label="詳細を閉じる">×</button>
+      </div>
+
+      <div id="routeDetailStatus" class="inline-status" aria-live="polite"></div>
+
+      <section class="detail-block" aria-labelledby="live-title">
+        <div class="section-heading compact-heading">
+          <div><p class="eyebrow">約20秒ごとに更新</p><h3 id="live-title">接近中のバス</h3></div>
+          <button id="refreshRealtimeButton" class="secondary-button" type="button">現在位置を更新</button>
+        </div>
+        <div id="liveBusList" class="live-bus-list"></div>
+      </section>
+
+      <section id="vehicleTrackingSection" class="detail-block hidden" aria-labelledby="tracking-title">
+        <div class="section-heading compact-heading">
+          <div><p class="eyebrow">選択した車両</p><h3 id="tracking-title">この先の推定到着</h3></div>
+          <button id="closeTrackingButton" class="text-button" type="button">選択解除</button>
+        </div>
+        <div id="vehicleSummary" class="vehicle-summary"></div>
+        <ol id="futureStopsList" class="progress-list"></ol>
+      </section>
+
+      <section class="detail-block" aria-labelledby="upcoming-title">
+        <div class="section-heading compact-heading">
+          <div><p class="eyebrow">GTFS-JP時刻表</p><h3 id="upcoming-title">これからの発車予定</h3></div>
+        </div>
+        <div id="upcomingDepartures" class="departure-list"></div>
+      </section>
+
+      <section class="detail-block" aria-labelledby="timetable-title">
+        <div class="section-heading compact-heading">
+          <div><p class="eyebrow">本日の運行</p><h3 id="timetable-title">時刻表</h3></div>
+          <span id="timetableDate" class="count-badge"></span>
+        </div>
+        <div id="dailyTimetable" class="timetable-grid"></div>
+      </section>
+
+      <p class="estimate-note">到着時刻はGTFSの予定時刻と車両位置の更新時刻から算出した推定値であり、交通状況により前後します。</p>
     </section>
   </main>
 
@@ -123,10 +148,10 @@
       <h2>このアプリについて</h2>
       <button id="closeAboutButton" class="icon-button" type="button" aria-label="閉じる">×</button>
     </div>
-    <p>現在地または検索語から、近くの都バス停留所・系統・行き先を表示するPWAです。</p>
+    <p>同名停留所をまとめ、系統別の時刻表、車両位置、各停留所への推定到着時刻を表示します。</p>
     <p><strong>データ：</strong><span id="datasetLabel">確認中</span></p>
     <p><strong>生成日時：</strong><span id="datasetUpdatedAt">確認中</span></p>
-    <p>停留所データは公式GTFS-JPを同梱の変換スクリプトで加工して利用します。</p>
+    <p>リアルタイム情報はGTFS-RT VehiclePositionを利用します。</p>
   </dialog>
 
   <footer>
