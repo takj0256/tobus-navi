@@ -2,7 +2,7 @@
   "meta": {
     "schema_version": 2,
     "dataset_name": "GTFS-JP変換データ",
-    "generated_at": "2026-07-18T14:45:45.818107+00:00",
+    "generated_at": "2026-07-18T15:09:54.102031+00:00",
     "provider": "東京都交通局・公共交通オープンデータ協議会",
     "license": "CC BY 4.0",
     "demo": false,
