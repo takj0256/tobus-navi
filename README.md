@@ -1,29 +1,31 @@
-# 都バスナビ Phase 6
+# 都バスナビ Phase 7
 
-現在地周辺の同名停留所を1枚にまとめ、のりば、行き先、次の発車、時刻表、走行中の車両、後続停留所への推定到着時刻を表示するPWAです。
+現在地周辺の同名停留所をまとめ、同じのりばを使用する複数系統の接近順、停留所上の現在位置、時刻表、後続停留所への推定到着時刻を表示するPWAです。
 
-## Phase 6の変更
+## Phase 7の変更
 
-- GTFSの `parent_station` を利用し、「錦糸町駅前」などの親停留所名でのりばを統合
-- 子停留所名が `1`、`2` のような番号だけでも「1番のりば」として表示
-- 停留所カードの表面に代表的な行き先を常時表示
-- 複数のりばは初期状態で閉じ、「のりば・系統を表示」で展開
-- 展開後は `├ 1番のりば`、`└ 2番のりば` のような階層表示
-- お気に入り変更後も開いていた停留所カードの状態を維持
-- データ形式をschema version 5へ更新
+- 同じ `stop_id`（同じのりば）を使用する複数系統を1つの運行情報画面へ統合
+- 「こののりばの接近情報」から、系統をまたいで到着予定の早い順に車両を表示
+- 接近カードへ系統番号と行き先を常時表示
+- 系統ごとに、乗車停留所と手前の停留所を並べた「停留所上の現在位置」を追加
+- バス記号をタップすると、その車両の先の停留所と推定到着時刻を表示
+- これからの発車予定も複数系統を時刻順に統合
+- 本日の全時刻表は系統・行き先別に開閉表示
+- Phase 6のGTFSデータ形式をそのまま使用可能
+- Service Workerキャッシュを `tobus-navi-v8` に更新
 
-## 重要：GTFSの再生成
+## データ更新について
 
-Phase 6は停留所の親子関係を利用するため、Phase 5以前のデータは使用できません。更新適用後に必ず再生成してください。
+Phase 6で生成済みの次のデータがあれば、Phase 7適用時の再生成は不要です。
+
+- `data/transit-index.json`
+- `data/routes/*.json`
+
+GTFS自体を更新する場合は次を実行します。
 
 ```bash
 ./tools/update_gtfs.sh ~/Downloads/ToeiBus-GTFS.zip
 ```
-
-生成物：
-
-- `data/transit-index.json`
-- `data/routes/*.json`
 
 ## Ubuntuでローカル実行
 
@@ -69,7 +71,7 @@ export const REALTIME_PROXY_ENDPOINT = "https://your-worker.workers.dev";
 
 ```bash
 git add .
-git commit -m "Group platforms under parent stops and add collapsible stop cards"
+git commit -m "Integrate routes by platform and add stop-position tracking"
 git push
 ```
 

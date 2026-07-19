@@ -31,7 +31,7 @@ export function validateDataset(dataset) {
     throw new Error("デモデータは正式版では使用できません。公式GTFS-JPから再生成してください。");
   }
   if (Number(dataset.meta?.schema_version || 0) < 5) {
-    throw new Error("停留所データが旧形式です。Phase 6の変換スクリプトで再生成してください。");
+    throw new Error("停留所データが旧形式です。Phase 6以降の変換スクリプトで再生成してください。");
   }
   if (dataset.stop_groups.length === 0) {
     throw new Error("停留所データが空です。公式GTFS-JPから再生成してください。");

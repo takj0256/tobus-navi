@@ -35,6 +35,13 @@ import {
   vehicleLocationLabel,
 } from "./realtime.js";
 import {
+  buildApproachLanes,
+  combinedVehicleKey,
+  mergePlatformDepartures,
+  mergePlatformTimetable,
+  mergePlatformVehicles,
+} from "./platform.js";
+import {
   REALTIME_MAX_BACKOFF_MS,
   REALTIME_REFRESH_MS,
   REALTIME_SOURCES,
@@ -53,7 +60,7 @@ const elements = Object.fromEntries([
   "routeDetailSubtitle", "routeDetailStatus", "closeDetailButton", "refreshRealtimeButton",
   "liveBusList", "vehicleTrackingSection", "closeTrackingButton", "vehicleSummary",
   "futureStopsList", "upcomingDepartures", "dailyTimetable", "timetableDate",
-  "timetableDetails", "timetableSummaryLabel",
+  "timetableDetails", "timetableSummaryLabel", "approachLaneList", "platformRouteSummary",
 ].map((id) => [id, document.querySelector(`#${id}`)]));
 
 elements.resultsTitle = document.querySelector("#results-title");
@@ -71,6 +78,7 @@ const state = {
   routeCache: new Map(),
   activeSelection: null,
   activeRouteData: null,
+  activeRouteEntries: [],
   realtimeFeed: null,
   realtimeTimer: null,
   selectedVehicleId: null,
@@ -104,7 +112,7 @@ async function init() {
     elements.datasetLabel.textContent = "正式データを読み込めませんでした";
     elements.datasetUpdatedAt.textContent = "未取得";
     setStatus("error", "交通データを利用できません", error.message);
-    elements.datasetSummary.textContent = "Phase 6変換スクリプトで data/transit-index.json と data/routes/ を生成してください。";
+    elements.datasetSummary.textContent = "Phase 6以降の変換スクリプトで data/transit-index.json と data/routes/ を生成してください。";
   }
 }
 
@@ -340,8 +348,12 @@ function renderStopGroups(groups, showDistance) {
       else state.openStopGroups.delete(groupId);
     });
   });
-  elements.resultsList.querySelectorAll("[data-route-action]").forEach((button) => {
-    button.addEventListener("click", () => openRouteDetail(button.dataset.groupId, button.dataset.stopId, button.dataset.routeKey));
+  elements.resultsList.querySelectorAll("[data-platform-action]").forEach((button) => {
+    button.addEventListener("click", () => openPlatformDetail(
+      button.dataset.groupId,
+      button.dataset.stopId,
+      button.dataset.preferredRouteKey || "",
+    ));
   });
   elements.resultsList.querySelectorAll("[data-favorite-action]").forEach((button) => {
     button.addEventListener("click", () => toggleFavorite(button.dataset.groupId, button.dataset.stopId, button.dataset.routeKey));
@@ -351,7 +363,7 @@ function renderStopGroups(groups, showDistance) {
 function platformPanel(group, platform, index, total) {
   const routes = deduplicateRoutes(platform.routes || []);
   const platformLabel = formatPlatformLabel(platform, index);
-  const destinationSummary = destinationLabelsForPlatform(platform, 3);
+  const destinationSummary = destinationLabelsForPlatform(platform, 4);
   const treeGlyph = index === total - 1 ? "└" : "├";
   return `<section class="platform-panel ${index === total - 1 ? "last-platform" : ""}">
     <div class="platform-heading">
@@ -359,37 +371,46 @@ function platformPanel(group, platform, index, total) {
         <span class="platform-tree-glyph" aria-hidden="true">${treeGlyph}</span>
         <div><strong>${escapeHtml(platformLabel)}</strong><p>${escapeHtml(destinationSummary)}</p></div>
       </div>
-      <span class="platform-count">${routes.length}方面</span>
+      <span class="platform-count">${routes.length}系統</span>
     </div>
-    <div class="route-list">${routes.map((route) => routeRow(group, platform, route)).join("") || "<p>系統情報がありません。</p>"}</div>
+    <button class="platform-live-button" type="button" data-platform-action
+      data-group-id="${escapeHtml(group.group_id)}" data-stop-id="${escapeHtml(platform.stop_id)}">
+      <span><strong>こののりばの接近情報</strong><small>${routes.length > 1 ? `${routes.length}系統を接近順にまとめて表示` : "時刻表と現在位置を表示"}</small></span>
+      <span aria-hidden="true">›</span>
+    </button>
+    <div class="route-summary-list">${routes.map((route) => routeSummaryRow(group, platform, route)).join("") || "<p>系統情報がありません。</p>"}</div>
   </section>`;
 }
 
-function routeRow(group, platform, route) {
+function routeSummaryRow(group, platform, route) {
   const routeKey = createRouteKey(route);
   const favorite = isFavorite(platform.stop_id, routeKey);
   const recent = isRecent(platform.stop_id, routeKey);
-  return `<div class="route-row ${favorite ? "priority-route" : ""}">
-    <button class="route-button" type="button" data-route-action data-group-id="${escapeHtml(group.group_id)}"
-      data-stop-id="${escapeHtml(platform.stop_id)}" data-route-key="${escapeHtml(routeKey)}">
+  return `<div class="route-summary-row ${favorite ? "priority-route" : ""}">
+    <button class="route-summary-button" type="button" data-platform-action
+      data-group-id="${escapeHtml(group.group_id)}" data-stop-id="${escapeHtml(platform.stop_id)}"
+      data-preferred-route-key="${escapeHtml(routeKey)}">
       <span class="route-name">${escapeHtml(route.route_name || "系統")}</span>
       <span class="route-headsign">${escapeHtml(displayHeadsign(route.headsign))}</span>
       ${favorite ? `<span class="route-state">お気に入り</span>` : recent ? `<span class="route-state">最近</span>` : ""}
-      <span aria-hidden="true">›</span>
     </button>
-    <button class="favorite-button" type="button" data-favorite-action data-group-id="${escapeHtml(group.group_id)}"
+    <button class="favorite-button compact-favorite" type="button" data-favorite-action data-group-id="${escapeHtml(group.group_id)}"
       data-stop-id="${escapeHtml(platform.stop_id)}" data-route-key="${escapeHtml(routeKey)}"
       aria-label="お気に入り${favorite ? "から解除" : "に追加"}" aria-pressed="${favorite}">★</button>
   </div>`;
 }
 
-async function openRouteDetail(groupId, stopId, routeKey) {
-  const selection = resolveSelection(groupId, stopId, routeKey);
-  if (!selection) return showToast("選択した系統を見つけられませんでした。");
+async function openPlatformDetail(groupId, stopId, preferredRouteKey = "") {
+  const platformSelection = resolvePlatform(groupId, stopId);
+  if (!platformSelection) return showToast("選択したのりばを見つけられませんでした。");
+  const routes = deduplicateRoutes(platformSelection.platform.routes || []);
+  if (!routes.length) return showToast("こののりばの系統情報がありません。");
+
   clearRealtimeTimer();
-  state.activeSelection = selection;
+  state.activeSelection = { ...platformSelection, routes, preferredRouteKey };
   state.selectedVehicleId = null;
   state.activeRouteData = null;
+  state.activeRouteEntries = [];
   state.realtimeFeed = null;
   state.realtimeFailureCount = 0;
   state.realtimeInFlight = false;
@@ -397,65 +418,102 @@ async function openRouteDetail(groupId, stopId, routeKey) {
   state.timetableRenderedKey = "";
   elements.timetableDetails.open = false;
   elements.timetableSummaryLabel.textContent = "時刻表を開く";
-  recordRecent(selection);
+
+  const recentRouteKey = preferredRouteKey || (routes.length === 1 ? createRouteKey(routes[0]) : "");
+  if (recentRouteKey) {
+    const recentSelection = resolveSelection(groupId, stopId, recentRouteKey);
+    if (recentSelection) recordRecent(recentSelection);
+  }
   renderFavorites();
   renderRecents();
   rerenderCurrentView();
 
+  const platformIndex = platformSelection.group.platforms.findIndex((item) => item.stop_id === stopId);
+  const platformLabel = formatPlatformLabel(platformSelection.platform, Math.max(0, platformIndex));
   elements.routeDetail.classList.remove("hidden");
-  elements.routeDetailEyebrow.textContent = `${selection.platform.platform_code || "のりば"}・運行情報`;
-  elements.routeDetailTitle.textContent = `${selection.route.route_name} ${displayHeadsign(selection.route.headsign)}`;
-  elements.routeDetailSubtitle.textContent = `${selection.group.stop_name}から乗車`;
+  elements.routeDetailEyebrow.textContent = `${platformLabel}・統合運行情報`;
+  elements.routeDetailTitle.textContent = platformSelection.group.stop_name;
+  elements.routeDetailSubtitle.textContent = `${routes.length}系統の接近順・停留所上の現在位置をまとめて表示`;
+  elements.platformRouteSummary.innerHTML = routes.map((route) => (
+    `<span class="route-filter-chip"><b>${escapeHtml(route.route_name || "系統")}</b>${escapeHtml(displayHeadsign(route.headsign))}</span>`
+  )).join("");
   elements.routeDetailStatus.textContent = "時刻表データを読み込んでいます…";
-  elements.liveBusList.innerHTML = loadingMarkup("リアルタイム情報を準備しています");
-  elements.upcomingDepartures.innerHTML = loadingMarkup("発車予定を計算しています");
+  elements.liveBusList.innerHTML = loadingMarkup("複数系統のリアルタイム情報を準備しています");
+  elements.approachLaneList.innerHTML = loadingMarkup("停留所上の現在位置を準備しています");
+  elements.upcomingDepartures.innerHTML = loadingMarkup("発車予定をまとめています");
   elements.dailyTimetable.innerHTML = "";
   renderVehicleTracking([]);
   elements.routeDetail.scrollIntoView({ behavior: "smooth", block: "start" });
 
   try {
-    state.activeRouteData = await getRouteData(selection.route.route_file);
+    state.activeRouteEntries = await Promise.all(routes.map(async (route) => ({
+      route,
+      routeKey: createRouteKey(route),
+      routeData: await getRouteData(route.route_file),
+    })));
+    state.activeRouteData = state.activeRouteEntries[0]?.routeData || null;
     renderStaticSchedule();
     await refreshRealtime(false);
   } catch (error) {
     console.error(error);
     elements.routeDetailStatus.textContent = error.message;
     elements.liveBusList.innerHTML = errorMarkup(error.message);
+    elements.approachLaneList.innerHTML = "";
   }
 }
 
 function renderStaticSchedule() {
-  const selection = selectionForSchedule();
+  if (!state.activeSelection || !state.activeRouteEntries.length) return;
   const now = new Date();
-  const upcoming = getUpcomingDepartures(state.activeRouteData, selection, now, 12);
-  elements.routeDetailStatus.textContent = `${state.activeRouteData.route.route_name}の正式GTFS-JP時刻表を表示しています。`;
-  elements.timetableDate.textContent = new Intl.DateTimeFormat("ja-JP", { timeZone: "Asia/Tokyo", month: "numeric", day: "numeric", weekday: "short" }).format(now);
+  const upcoming = mergePlatformDepartures(
+    state.activeRouteEntries,
+    state.activeSelection.platform.stop_id,
+    now,
+    12,
+  );
+  elements.routeDetailStatus.textContent = `${state.activeRouteEntries.length}系統の正式GTFS-JP時刻表を統合しています。`;
+  elements.timetableDate.textContent = new Intl.DateTimeFormat("ja-JP", {
+    timeZone: "Asia/Tokyo", month: "numeric", day: "numeric", weekday: "short",
+  }).format(now);
 
   elements.upcomingDepartures.innerHTML = upcoming.length ? upcoming.map((departure) => {
     const mins = minutesUntil(departure.departure_ms, now.getTime());
-    return `<div class="departure-card"><strong>${formatTimestampClock(departure.departure_ms)}</strong><span>${mins === 0 ? "まもなく" : `あと${mins}分`}</span></div>`;
+    return `<div class="departure-card combined-departure">
+      <span class="departure-route">${escapeHtml(departure.route.route_name || "系統")}</span>
+      <span class="departure-destination">${escapeHtml(displayHeadsign(departure.route.headsign))}</span>
+      <strong>${formatTimestampClock(departure.departure_ms)}</strong>
+      <span>${mins === 0 ? "まもなく" : `あと${mins}分`}</span>
+    </div>`;
   }).join("") : `<p class="empty-message">この先30時間以内の発車予定がありません。</p>`;
 
-  elements.dailyTimetable.innerHTML = `<p class="empty-message">「時刻表を開く」をタップすると本日の全便を表示します。</p>`;
+  elements.dailyTimetable.innerHTML = `<p class="empty-message">「時刻表を開く」をタップすると、系統・行き先ごとに本日の全便を表示します。</p>`;
   if (elements.timetableDetails.open) renderDailyTimetable();
 }
 
 function renderDailyTimetable() {
-  if (!state.activeRouteData || !state.activeSelection) return;
-  const selection = selectionForSchedule();
+  if (!state.activeRouteEntries.length || !state.activeSelection) return;
   const dateKey = currentTokyoDateKey();
-  const renderKey = `${state.activeSelection.platform.stop_id}|${state.activeSelection.routeKey}|${dateKey}`;
+  const routeKeys = state.activeRouteEntries.map((entry) => entry.routeKey).join(",");
+  const renderKey = `${state.activeSelection.platform.stop_id}|${routeKeys}|${dateKey}`;
   if (state.timetableRenderedKey === renderKey) return;
 
-  const daily = getDailyTimetable(state.activeRouteData, selection, dateKey);
-  elements.dailyTimetable.innerHTML = daily.length ? daily.map((departure) => (
-    `<span class="time-chip">${formatGtfsClock(departure.scheduled_seconds)}</span>`
-  )).join("") : `<p class="empty-message">本日の運行予定がありません。</p>`;
+  const groups = mergePlatformTimetable(
+    state.activeRouteEntries,
+    state.activeSelection.platform.stop_id,
+    dateKey,
+  );
+  elements.dailyTimetable.innerHTML = groups.length ? groups.map((entry) => `
+    <section class="route-timetable-group">
+      <div class="route-timetable-heading"><b>${escapeHtml(entry.route.route_name || "系統")}</b><span>${escapeHtml(displayHeadsign(entry.route.headsign))}</span></div>
+      <div class="timetable-grid">${entry.departures.map((departure) => (
+        `<span class="time-chip">${formatGtfsClock(departure.scheduled_seconds)}</span>`
+      )).join("")}</div>
+    </section>`).join("") : `<p class="empty-message">本日の運行予定がありません。</p>`;
   state.timetableRenderedKey = renderKey;
 }
 
 async function refreshRealtime(userRequested = false) {
-  if (!state.activeSelection || !state.activeRouteData) return;
+  if (!state.activeSelection || !state.activeRouteEntries.length) return;
   if (state.realtimeInFlight) {
     if (userRequested) showToast("車両位置を更新中です。");
     return;
@@ -487,6 +545,7 @@ async function refreshRealtime(userRequested = false) {
     const retrySeconds = Math.round(nextRealtimeDelayMs() / 1000);
     elements.routeDetailStatus.textContent = `車両位置を取得できませんでした。${retrySeconds}秒後に再試行します。時刻表は利用できます。`;
     elements.liveBusList.innerHTML = realtimeErrorMarkup(error, retrySeconds);
+    elements.approachLaneList.innerHTML = `<p class="empty-message">リアルタイム情報を取得できないため、停留所上の現在位置を表示できません。</p>`;
   } finally {
     if (generation === state.realtimeGeneration) {
       state.realtimeInFlight = false;
@@ -522,30 +581,36 @@ function realtimeErrorMarkup(error, retrySeconds) {
 }
 
 function renderRealtime() {
-  const selection = selectionForSchedule();
+  if (!state.activeSelection || !state.activeRouteEntries.length) return;
   const nowMs = Date.now();
-  const vehicles = getApproachingVehicles(state.activeRouteData, selection, state.realtimeFeed, nowMs, {
-    maxVehicleAgeMs: REALTIME_VEHICLE_MAX_AGE_MS,
-  });
+  const vehicles = mergePlatformVehicles(
+    state.activeRouteEntries,
+    state.activeSelection.platform.stop_id,
+    state.realtimeFeed,
+    nowMs,
+    { maxVehicleAgeMs: REALTIME_VEHICLE_MAX_AGE_MS },
+  );
   const feedTime = state.realtimeFeed.timestamp ? formatTimestampClock(state.realtimeFeed.timestamp * 1000) : "不明";
   const sourceLabel = state.realtimeFeed.source?.label || "リアルタイム配信";
   const ageMinutes = Math.ceil(realtimeFeedAgeMs(state.realtimeFeed, nowMs) / 60_000);
   const stale = isRealtimeFeedStale(state.realtimeFeed, nowMs, REALTIME_STALE_AFTER_MS);
   elements.routeDetailStatus.textContent = stale
     ? `位置情報が古い可能性があります（${ageMinutes}分前・${sourceLabel}）。自動再取得を継続します。`
-    : `車両位置 ${vehicles.length}台・最終更新 ${feedTime}・${sourceLabel}`;
+    : `接近中 ${vehicles.length}台・最終更新 ${feedTime}・${sourceLabel}`;
 
   if (!vehicles.length) {
-    elements.liveBusList.innerHTML = `<p class="empty-message">現在、この停留所へ向かう車両をGTFS-RT上で確認できません。予定時刻表をご利用ください。</p>`;
+    elements.liveBusList.innerHTML = `<p class="empty-message">現在、こののりばへ向かう車両をGTFS-RT上で確認できません。予定時刻表をご利用ください。</p>`;
+    renderApproachLanes([]);
     renderVehicleTracking([]);
     return;
   }
 
   elements.liveBusList.innerHTML = vehicles.map((item, index) => {
-    const vehicleId = vehicleKey(item.vehicle);
+    const vehicleId = item.combinedVehicleId || combinedVehicleKey(item);
     const label = item.vehicle.vehicle?.label || item.vehicle.vehicle?.id || `バス${index + 1}`;
-    const staleClass = isRealtimeFeedStale(state.realtimeFeed, Date.now(), REALTIME_STALE_AFTER_MS) ? "stale" : "";
-    return `<button class="live-bus-card ${vehicleId === state.selectedVehicleId ? "selected" : ""} ${staleClass}" type="button" data-vehicle-id="${escapeHtml(vehicleId)}">
+    const staleClass = stale ? "stale" : "";
+    return `<button class="live-bus-card combined-live-card ${vehicleId === state.selectedVehicleId ? "selected" : ""} ${staleClass}" type="button" data-vehicle-id="${escapeHtml(vehicleId)}">
+      <span class="live-bus-route"><b>${escapeHtml(item.route.route_name || "系統")}</b><span>${escapeHtml(displayHeadsign(item.route.headsign))}</span></span>
       <span class="live-bus-top"><strong>${escapeHtml(label)}</strong><span class="live-status">${escapeHtml(realtimeStatusLabel(item.vehicle.currentStatus))}</span></span>
       <span class="live-location">${escapeHtml(item.currentLabel)}</span>
       <span class="live-eta"><b>${item.minutes === 0 ? "まもなく" : `約${item.minutes}分`}</b>・${item.stopsAway}停留所前</span>
@@ -553,14 +618,66 @@ function renderRealtime() {
     </button>`;
   }).join("");
 
-  elements.liveBusList.querySelectorAll("[data-vehicle-id]").forEach((button) => {
+  bindVehicleButtons(elements.liveBusList, vehicles);
+  renderApproachLanes(vehicles);
+  if (state.selectedVehicleId) renderVehicleTracking(vehicles);
+}
+
+function renderApproachLanes(vehicles) {
+  if (!state.activeSelection || !state.activeRouteEntries.length) {
+    elements.approachLaneList.innerHTML = "";
+    return;
+  }
+  const lanes = buildApproachLanes(
+    state.activeRouteEntries,
+    vehicles,
+    state.activeSelection.platform.stop_id,
+    7,
+  );
+  if (!lanes.length) {
+    elements.approachLaneList.innerHTML = `<p class="empty-message">停留所列を生成できませんでした。</p>`;
+    return;
+  }
+
+  elements.approachLaneList.innerHTML = lanes.map((lane) => `
+    <article class="approach-lane">
+      <header class="approach-lane-header">
+        <span class="approach-route-badge">${escapeHtml(lane.route.route_name || "系統")}</span>
+        <strong>${escapeHtml(displayHeadsign(lane.route.headsign))}</strong>
+        <small>${lane.markers.length ? `${lane.markers.length}台接近中` : "接近車両なし"}</small>
+      </header>
+      <div class="approach-scroll" role="region" aria-label="${escapeHtml(lane.route.route_name || "系統")} ${escapeHtml(displayHeadsign(lane.route.headsign))}の停留所上の現在位置">
+        <div class="approach-track">
+          ${lane.stops.map((stop, index) => {
+            const markers = lane.markers.filter((marker) => marker.lane_index === index);
+            return `<div class="approach-stop ${stop.is_target ? "target" : ""}">
+              <div class="approach-marker-stack">${markers.map((marker) => `
+                <button class="approach-bus-marker ${marker.vehicle_id === state.selectedVehicleId ? "selected" : ""}" type="button"
+                  data-vehicle-id="${escapeHtml(marker.vehicle_id)}" aria-label="${escapeHtml(marker.vehicle_label)}、${marker.minutes === 0 ? "まもなく" : `約${marker.minutes}分`}">
+                  <span aria-hidden="true">🚌</span><small>${marker.minutes === 0 ? "まもなく" : `${marker.minutes}分`}</small>
+                </button>`).join("")}</div>
+              <span class="approach-dot" aria-hidden="true"></span>
+              <span class="approach-stop-name">${escapeHtml(stop.stop_name)}</span>
+              ${stop.is_target ? `<span class="approach-target-label">乗車停留所</span>` : ""}
+            </div>`;
+          }).join("")}
+          ${lane.hidden_stop_count > 0 ? `<div class="approach-overflow"><span>←</span><small>さらに${lane.hidden_stop_count}停留所前</small></div>` : ""}
+        </div>
+      </div>
+    </article>`).join("");
+
+  bindVehicleButtons(elements.approachLaneList, vehicles);
+}
+
+function bindVehicleButtons(container, vehicles) {
+  container.querySelectorAll("[data-vehicle-id]").forEach((button) => {
     button.addEventListener("click", () => {
       state.selectedVehicleId = button.dataset.vehicleId;
       renderRealtime();
+      const selected = vehicles.find((item) => (item.combinedVehicleId || combinedVehicleKey(item)) === state.selectedVehicleId);
+      if (selected) elements.vehicleTrackingSection.scrollIntoView({ behavior: "smooth", block: "nearest" });
     });
   });
-
-  if (state.selectedVehicleId) renderVehicleTracking(vehicles);
 }
 
 function renderVehicleTracking(vehicles) {
@@ -569,17 +686,17 @@ function renderVehicleTracking(vehicles) {
     elements.futureStopsList.innerHTML = "";
     return;
   }
-  const selected = vehicles.find((item) => vehicleKey(item.vehicle) === state.selectedVehicleId);
+  const selected = vehicles.find((item) => (item.combinedVehicleId || combinedVehicleKey(item)) === state.selectedVehicleId);
   if (!selected) {
     state.selectedVehicleId = null;
     elements.vehicleTrackingSection.classList.add("hidden");
     return;
   }
 
-  const future = buildFutureStopEstimates(selected.vehicle, selected.trip, state.activeRouteData, Date.now(), 18);
+  const future = buildFutureStopEstimates(selected.vehicle, selected.trip, selected.routeData, Date.now(), 18);
   const label = selected.vehicle.vehicle?.label || selected.vehicle.vehicle?.id || "選択したバス";
   elements.vehicleTrackingSection.classList.remove("hidden");
-  elements.vehicleSummary.innerHTML = `<strong>${escapeHtml(label)}</strong><span>${escapeHtml(vehicleLocationLabel(selected.vehicle, selected.trip, state.activeRouteData))}</span>`;
+  elements.vehicleSummary.innerHTML = `<strong>${escapeHtml(selected.route.route_name || "系統")} ${escapeHtml(displayHeadsign(selected.route.headsign))}</strong><span>${escapeHtml(label)}・${escapeHtml(vehicleLocationLabel(selected.vehicle, selected.trip, selected.routeData))}</span>`;
   elements.futureStopsList.innerHTML = future.map((stop) => `
     <li class="progress-item ${stop.isCurrent ? "current" : ""}">
       <span class="progress-marker" aria-hidden="true"></span>
@@ -594,18 +711,20 @@ function closeRouteDetail() {
   state.realtimeInFlight = false;
   state.activeSelection = null;
   state.activeRouteData = null;
+  state.activeRouteEntries = [];
   state.selectedVehicleId = null;
   elements.routeDetail.classList.add("hidden");
 }
 
 function clearRealtimeTimer() {
-  if (state.realtimeTimer) window.clearInterval(state.realtimeTimer);
+  if (state.realtimeTimer) window.clearTimeout(state.realtimeTimer);
   state.realtimeTimer = null;
 }
 
-function selectionForSchedule() {
-  const { platform, route } = state.activeSelection;
-  return { stop_id: platform.stop_id, headsign: route.headsign, direction_id: route.direction_id };
+function resolvePlatform(groupId, stopId) {
+  const group = state.dataset.stop_groups.find((item) => item.group_id === groupId);
+  const platform = group?.platforms?.find((item) => item.stop_id === stopId);
+  return group && platform ? { group, platform } : null;
 }
 
 async function getRouteData(routeFile) {
@@ -688,7 +807,7 @@ function storedRouteCard(item, removable) {
 }
 
 function bindStoredRouteButtons(container) {
-  container.querySelectorAll("[data-stored-open]").forEach((button) => button.addEventListener("click", () => openRouteDetail(button.dataset.groupId, button.dataset.stopId, button.dataset.routeKey)));
+  container.querySelectorAll("[data-stored-open]").forEach((button) => button.addEventListener("click", () => openPlatformDetail(button.dataset.groupId, button.dataset.stopId, button.dataset.routeKey)));
   container.querySelectorAll("[data-stored-remove]").forEach((button) => button.addEventListener("click", () => toggleFavorite(button.dataset.groupId, button.dataset.stopId, button.dataset.routeKey)));
 }
 

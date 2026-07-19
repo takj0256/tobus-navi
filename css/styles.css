@@ -646,3 +646,252 @@ footer p { margin-bottom: .35rem; }
   .platform-count { margin-top: 0; }
   .platform-panel .route-list { margin-left: 1.1rem; }
 }
+
+/* Phase 7: platform-level integrated arrivals and stop-position lanes */
+.platform-live-button {
+  width: calc(100% - 1.55rem);
+  min-height: 58px;
+  margin: 0 0 .55rem 1.55rem;
+  padding: .72rem .82rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: .75rem;
+  border: 1px solid #bfd9ee;
+  border-radius: 13px;
+  color: var(--primary-dark);
+  background: var(--surface-soft);
+  text-align: left;
+}
+.platform-live-button span:first-child { display: grid; gap: .15rem; }
+.platform-live-button strong { font-size: .94rem; }
+.platform-live-button small { color: var(--muted); font-size: .76rem; font-weight: 600; }
+.platform-live-button:hover { border-color: var(--primary); background: #e6f2fb; }
+.route-summary-list {
+  display: grid;
+  gap: .4rem;
+  margin-left: 1.55rem;
+  padding: 0 .25rem .8rem;
+}
+.route-summary-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 44px;
+  gap: .45rem;
+  align-items: stretch;
+}
+.route-summary-button {
+  min-height: 48px;
+  display: grid;
+  grid-template-columns: minmax(3.5rem, auto) minmax(0, 1fr) auto;
+  align-items: center;
+  gap: .6rem;
+  padding: .55rem .7rem;
+  border: 1px solid var(--border);
+  border-radius: 11px;
+  color: var(--text);
+  background: #fff;
+  text-align: left;
+}
+.route-summary-button:hover { border-color: #9ec7e7; background: #f7fbfe; }
+.compact-favorite { min-width: 44px; min-height: 44px; }
+.platform-route-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .4rem;
+  margin-top: .65rem;
+}
+.route-filter-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: .38rem;
+  padding: .3rem .55rem;
+  border: 1px solid #cfe1f1;
+  border-radius: 999px;
+  color: var(--primary-dark);
+  background: var(--surface-soft);
+  font-size: .76rem;
+}
+.route-filter-chip b { font-size: .79rem; }
+.combined-departure {
+  grid-template-columns: auto 1fr;
+  column-gap: .45rem;
+}
+.combined-departure .departure-route {
+  width: fit-content;
+  padding: .14rem .38rem;
+  border-radius: 999px;
+  color: var(--primary-dark);
+  background: var(--surface-soft);
+  font-weight: 850;
+}
+.combined-departure .departure-destination {
+  overflow: hidden;
+  color: var(--text);
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.combined-departure strong,
+.combined-departure > span:last-child { grid-column: span 1; }
+.route-timetable-group + .route-timetable-group {
+  margin-top: .85rem;
+  padding-top: .85rem;
+  border-top: 1px dashed var(--border);
+}
+.route-timetable-heading {
+  display: flex;
+  align-items: baseline;
+  gap: .55rem;
+  margin-bottom: .55rem;
+}
+.route-timetable-heading b { color: var(--primary-dark); }
+.route-timetable-heading span { color: var(--muted); font-size: .82rem; }
+.live-bus-route {
+  display: flex;
+  align-items: center;
+  gap: .45rem;
+  margin-bottom: .1rem;
+}
+.live-bus-route b {
+  padding: .18rem .45rem;
+  border-radius: 999px;
+  color: #fff;
+  background: var(--primary-dark);
+  font-size: .76rem;
+}
+.live-bus-route span { color: var(--text); font-size: .82rem; font-weight: 750; }
+.approach-map-heading {
+  margin-top: 1rem;
+  padding-top: .9rem;
+  border-top: 1px dashed var(--border);
+}
+.approach-map-heading h4 { margin: 0; font-size: .98rem; }
+.approach-map-heading p { margin: .25rem 0 0; color: var(--muted); font-size: .78rem; }
+.approach-lane-list { display: grid; gap: .8rem; margin-top: .65rem; }
+.approach-lane {
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 13px;
+  background: #fff;
+}
+.approach-lane-header {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: .45rem;
+  padding: .62rem .72rem;
+  border-bottom: 1px solid var(--border);
+  background: #f8fafc;
+}
+.approach-lane-header strong { font-size: .86rem; }
+.approach-lane-header small { margin-left: auto; color: var(--muted); }
+.approach-route-badge {
+  padding: .16rem .42rem;
+  border-radius: 999px;
+  color: #fff;
+  background: var(--primary-dark);
+  font-size: .75rem;
+  font-weight: 850;
+}
+.approach-scroll {
+  overflow-x: auto;
+  overscroll-behavior-inline: contain;
+  padding: .65rem .5rem .8rem;
+  scrollbar-width: thin;
+}
+.approach-track {
+  display: flex;
+  align-items: flex-start;
+  width: max-content;
+  min-width: 100%;
+}
+.approach-stop {
+  position: relative;
+  width: 94px;
+  min-width: 94px;
+  display: grid;
+  justify-items: center;
+  gap: .28rem;
+  padding: 0 .25rem;
+  text-align: center;
+}
+.approach-stop:not(:last-of-type)::after {
+  content: "←";
+  position: absolute;
+  z-index: 0;
+  top: 45px;
+  left: calc(50% + 10px);
+  width: calc(100% - 20px);
+  color: #92aabd;
+  font-weight: 850;
+  text-align: center;
+}
+.approach-marker-stack {
+  z-index: 2;
+  min-height: 34px;
+  display: flex;
+  justify-content: center;
+  align-items: flex-end;
+  flex-wrap: wrap;
+  gap: .16rem;
+}
+.approach-bus-marker {
+  min-width: 38px;
+  min-height: 32px;
+  display: grid;
+  place-items: center;
+  gap: 0;
+  padding: .1rem .24rem;
+  border: 1px solid #e6b94f;
+  border-radius: 9px;
+  color: #614800;
+  background: #fff7d7;
+  line-height: 1;
+}
+.approach-bus-marker.selected { outline: 2px solid var(--primary); outline-offset: 1px; }
+.approach-bus-marker small { font-size: .62rem; font-weight: 850; }
+.approach-dot {
+  z-index: 1;
+  width: 15px;
+  height: 15px;
+  border: 3px solid var(--primary);
+  border-radius: 50%;
+  background: #fff;
+}
+.approach-stop.target .approach-dot { background: var(--primary); }
+.approach-stop-name {
+  max-width: 88px;
+  font-size: .7rem;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+.approach-target-label {
+  padding: .12rem .3rem;
+  border-radius: 999px;
+  color: var(--primary-dark);
+  background: var(--surface-soft);
+  font-size: .61rem;
+  font-weight: 850;
+}
+.approach-overflow {
+  width: 94px;
+  min-width: 94px;
+  min-height: 90px;
+  display: grid;
+  place-content: center;
+  gap: .2rem;
+  color: var(--muted);
+  text-align: center;
+}
+.approach-overflow span { font-size: 1.1rem; }
+.approach-overflow small { font-size: .68rem; }
+
+@media (max-width: 520px) {
+  .platform-live-button,
+  .route-summary-list { margin-left: 1.1rem; width: calc(100% - 1.1rem); }
+  .route-summary-button { grid-template-columns: 3.5rem minmax(0, 1fr); }
+  .route-summary-button .route-state { display: none; }
+  .approach-stop { width: 84px; min-width: 84px; }
+  .approach-stop-name { max-width: 78px; }
+  .approach-lane-header small { width: 100%; margin-left: 0; }
+}

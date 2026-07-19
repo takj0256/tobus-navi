@@ -99,6 +99,7 @@
           <p id="routeDetailEyebrow" class="eyebrow">運行情報</p>
           <h2 id="routeDetailTitle">系統を選択してください</h2>
           <p id="routeDetailSubtitle" class="detail-subtitle"></p>
+          <div id="platformRouteSummary" class="platform-route-summary" aria-label="こののりばを通る系統"></div>
         </div>
         <button id="closeDetailButton" class="icon-button" type="button" aria-label="詳細を閉じる">×</button>
       </div>
@@ -107,10 +108,15 @@
 
       <section class="detail-block" aria-labelledby="live-title">
         <div class="section-heading compact-heading">
-          <div><p class="eyebrow">通常20秒ごとに更新</p><h3 id="live-title">接近中のバス</h3></div>
+          <div><p class="eyebrow">通常20秒ごとに更新</p><h3 id="live-title">こののりばへの接近順</h3></div>
           <button id="refreshRealtimeButton" class="secondary-button" type="button">現在位置を更新</button>
         </div>
         <div id="liveBusList" class="live-bus-list"></div>
+        <div class="approach-map-heading">
+          <h4>停留所上の現在位置</h4>
+          <p>乗車停留所を左端にし、接近中の車両を系統ごとに表示します。</p>
+        </div>
+        <div id="approachLaneList" class="approach-lane-list" aria-live="polite"></div>
       </section>
 
       <section id="vehicleTrackingSection" class="detail-block hidden" aria-labelledby="tracking-title">
@@ -148,7 +154,7 @@
       <h2>このアプリについて</h2>
       <button id="closeAboutButton" class="icon-button" type="button" aria-label="閉じる">×</button>
     </div>
-    <p>同名停留所をまとめ、系統別の時刻表、車両位置、各停留所への推定到着時刻を表示します。</p>
+    <p>同名停留所とのりばをまとめ、同じのりばを使う複数系統の接近順、停留所上の現在位置、時刻表、推定到着時刻を表示します。</p>
     <p><strong>データ：</strong><span id="datasetLabel">確認中</span></p>
     <p><strong>生成日時：</strong><span id="datasetUpdatedAt">確認中</span></p>
     <p>リアルタイム情報はGTFS-RT VehiclePositionを利用します。</p>

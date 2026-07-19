@@ -1,11 +1,11 @@
-# UbuntuでPhase 6を既存リポジトリへ適用
+# UbuntuでPhase 7を既存リポジトリへ適用
 
 ## 1. ZIPを展開
 
 ```bash
 cd ~/Downloads
-rm -rf tobus-navi-pwa-phase6
-unzip tobus-navi-pwa-phase6.zip
+rm -rf tobus-navi-pwa-phase7
+unzip tobus-navi-pwa-phase7.zip
 ```
 
 ## 2. Gitリポジトリへ移動
@@ -21,7 +21,7 @@ printf '更新先: %s\n' "$REPO"
 ## 3. 安全確認付きで上書き
 
 ```bash
-SOURCE="$HOME/Downloads/tobus-navi-pwa-phase6"
+SOURCE="$HOME/Downloads/tobus-navi-pwa-phase7"
 
 if [[ -z "$REPO" || "$REPO" == "/" || ! -d "$REPO/.git" ]]; then
   echo "危険または不正な更新先のため中止: $REPO" >&2
@@ -31,19 +31,19 @@ fi
 rsync -av --no-group "$SOURCE/" "$REPO/"
 ```
 
-## 4. GTFSを必ず再生成
+## 4. データを確認
 
-Phase 6では `parent_station` を使うschema version 5へ変更したため、以前の `transit-index.json` は使用できません。
+Phase 6の正式データをそのまま利用できます。
 
 ```bash
 cd "$REPO"
-./tools/update_gtfs.sh ~/Downloads/ToeiBus-GTFS.zip
+python3 tools/validate_dataset.py data/transit-index.json
 ```
 
-Windows側のダウンロードフォルダにある場合：
+GTFSを更新したい場合だけ再生成します。
 
 ```bash
-./tools/update_gtfs.sh /mnt/c/Users/Windowsユーザー名/Downloads/ToeiBus-GTFS.zip
+./tools/update_gtfs.sh ~/Downloads/ToeiBus-GTFS.zip
 ```
 
 ## 5. テスト
@@ -68,16 +68,18 @@ http://127.0.0.1:8000
 
 確認項目：
 
-- 「錦糸町駅前」が1枚のカードで表示される
-- カード表面に代表行き先が表示される
-- 複数のりばは閉じた状態で表示される
-- 開くと1番、2番などののりばと系統が表示される
+- 同じのりばを使用する複数系統が「こののりばの接近情報」にまとまる
+- 接近中のバスが系統をまたいで到着順に並ぶ
+- 各接近カードに系統番号と行き先が表示される
+- 「停留所上の現在位置」に乗車停留所と手前の停留所が表示される
+- バス記号をタップすると、その車両のこの先の推定到着が開く
+- 発車予定と本日の時刻表が複数系統に対応する
 
 ## 7. GitHubへ反映
 
 ```bash
 git status
 git add .
-git commit -m "Group platforms under parent stops and add collapsible stop cards"
+git commit -m "Integrate routes by platform and add stop-position tracking"
 git push
 ```

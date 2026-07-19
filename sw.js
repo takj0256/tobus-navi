@@ -1,4 +1,4 @@
-const CACHE_NAME = "tobus-navi-v7";
+const CACHE_NAME = "tobus-navi-v8";
 const APP_SHELL = [
   "./",
   "./index.html",
@@ -6,6 +6,7 @@ const APP_SHELL = [
   "./js/app.js",
   "./js/config.js",
   "./js/geo.js",
+  "./js/platform.js",
   "./js/data.js",
   "./js/display.js",
   "./js/suggest.js",

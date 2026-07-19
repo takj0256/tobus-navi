@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""GTFS/GTFS-JPを都バスナビ Phase 6 用データへ変換する。
+"""GTFS/GTFS-JPを都バスナビ Phase 6以降用データへ変換する。
 
 出力:
   data/transit-index.json      停留所グループ・系統索引
