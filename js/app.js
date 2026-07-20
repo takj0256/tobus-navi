@@ -32,6 +32,7 @@ import {
   isRealtimeFeedStale,
   realtimeFeedAgeMs,
   realtimeStatusLabel,
+  recordVehicleObservations,
   vehicleLocationLabel,
 } from "./realtime.js";
 import {
@@ -42,6 +43,8 @@ import {
   mergePlatformVehicles,
 } from "./platform.js";
 import {
+  REALTIME_ANTICIPATION_MAX_SECONDS,
+  REALTIME_ANTICIPATION_SEGMENT_RATIO,
   REALTIME_MAX_BACKOFF_MS,
   REALTIME_REFRESH_MS,
   REALTIME_SOURCES,
@@ -87,6 +90,7 @@ const state = {
   realtimeInFlight: false,
   realtimeGeneration: 0,
   openStopGroups: new Set(),
+  vehicleObservationHistory: new Map(),
 };
 
 init();
@@ -536,6 +540,7 @@ async function refreshRealtime(userRequested = false) {
     });
     if (generation !== state.realtimeGeneration || !state.activeSelection) return;
     state.realtimeFeed = feed;
+    recordVehicleObservations(state.vehicleObservationHistory, feed);
     state.realtimeFailureCount = 0;
     renderRealtime();
   } catch (error) {
@@ -588,15 +593,21 @@ function renderRealtime() {
     state.activeSelection.platform.stop_id,
     state.realtimeFeed,
     nowMs,
-    { maxVehicleAgeMs: REALTIME_VEHICLE_MAX_AGE_MS },
+    {
+      maxVehicleAgeMs: REALTIME_VEHICLE_MAX_AGE_MS,
+      anticipationMaxSeconds: REALTIME_ANTICIPATION_MAX_SECONDS,
+      anticipationSegmentRatio: REALTIME_ANTICIPATION_SEGMENT_RATIO,
+      observationHistory: state.vehicleObservationHistory,
+    },
   );
   const feedTime = state.realtimeFeed.timestamp ? formatTimestampClock(state.realtimeFeed.timestamp * 1000) : "不明";
   const sourceLabel = state.realtimeFeed.source?.label || "リアルタイム配信";
-  const ageMinutes = Math.ceil(realtimeFeedAgeMs(state.realtimeFeed, nowMs) / 60_000);
+  const ageSeconds = Math.max(0, Math.round(realtimeFeedAgeMs(state.realtimeFeed, nowMs) / 1000));
+  const ageLabel = ageSeconds < 120 ? `${ageSeconds}秒前` : `${Math.ceil(ageSeconds / 60)}分前`;
   const stale = isRealtimeFeedStale(state.realtimeFeed, nowMs, REALTIME_STALE_AFTER_MS);
   elements.routeDetailStatus.textContent = stale
-    ? `位置情報が古い可能性があります（${ageMinutes}分前・${sourceLabel}）。自動再取得を継続します。`
-    : `接近中 ${vehicles.length}台・最終更新 ${feedTime}・${sourceLabel}`;
+    ? `位置情報が古い可能性があります（${ageLabel}・${sourceLabel}）。補正しながら自動再取得を継続します。`
+    : `接近中 ${vehicles.length}台・最終更新 ${feedTime}（${ageLabel}）・最大30秒先読み補正`;
 
   if (!vehicles.length) {
     elements.liveBusList.innerHTML = `<p class="empty-message">現在、こののりばへ向かう車両をGTFS-RT上で確認できません。予定時刻表をご利用ください。</p>`;
@@ -613,7 +624,8 @@ function renderRealtime() {
       <span class="live-bus-route"><b>${escapeHtml(item.route.route_name || "系統")}</b><span>${escapeHtml(displayHeadsign(item.route.headsign))}</span></span>
       <span class="live-bus-top"><strong>${escapeHtml(label)}</strong><span class="live-status">${escapeHtml(realtimeStatusLabel(item.vehicle.currentStatus))}</span></span>
       <span class="live-location">${escapeHtml(item.currentLabel)}</span>
-      <span class="live-eta"><b>${item.minutes === 0 ? "まもなく" : `約${item.minutes}分`}</b>・${item.stopsAway}停留所前</span>
+      <span class="live-eta"><b>${escapeHtml(item.etaLabel || (item.minutes === 0 ? "まもなく" : `約${item.minutes}分`))}</b>・${item.stopsAway}停留所前</span>
+      <span class="live-correction">${escapeHtml(item.correctionLabel || "時刻表と配信時刻から補正")}</span>
       <span class="live-updated">位置更新 ${escapeHtml(item.updatedAt)}　詳細を見る ›</span>
     </button>`;
   }).join("");
@@ -653,8 +665,8 @@ function renderApproachLanes(vehicles) {
             return `<div class="approach-stop ${stop.is_target ? "target" : ""}">
               <div class="approach-marker-stack">${markers.map((marker) => `
                 <button class="approach-bus-marker ${marker.vehicle_id === state.selectedVehicleId ? "selected" : ""}" type="button"
-                  data-vehicle-id="${escapeHtml(marker.vehicle_id)}" aria-label="${escapeHtml(marker.vehicle_label)}、${marker.minutes === 0 ? "まもなく" : `約${marker.minutes}分`}">
-                  <span aria-hidden="true">🚌</span><small>${marker.minutes === 0 ? "まもなく" : `${marker.minutes}分`}</small>
+                  data-vehicle-id="${escapeHtml(marker.vehicle_id)}" style="--segment-offset:${Number(marker.segment_offset || 0).toFixed(3)}" aria-label="${escapeHtml(marker.vehicle_label)}、${escapeHtml(marker.eta_label || (marker.minutes === 0 ? "まもなく" : `約${marker.minutes}分`))}">
+                  <span aria-hidden="true">🚌</span><small>${escapeHtml(marker.eta_label || (marker.minutes === 0 ? "まもなく" : `${marker.minutes}分`))}</small>
                 </button>`).join("")}</div>
               <span class="approach-dot" aria-hidden="true"></span>
               <span class="approach-stop-name">${escapeHtml(stop.stop_name)}</span>
@@ -693,15 +705,19 @@ function renderVehicleTracking(vehicles) {
     return;
   }
 
-  const future = buildFutureStopEstimates(selected.vehicle, selected.trip, selected.routeData, Date.now(), 18);
+  const future = buildFutureStopEstimates(selected.vehicle, selected.trip, selected.routeData, Date.now(), 18, {
+    anticipationMaxSeconds: REALTIME_ANTICIPATION_MAX_SECONDS,
+    anticipationSegmentRatio: REALTIME_ANTICIPATION_SEGMENT_RATIO,
+    observationHistory: state.vehicleObservationHistory,
+  });
   const label = selected.vehicle.vehicle?.label || selected.vehicle.vehicle?.id || "選択したバス";
   elements.vehicleTrackingSection.classList.remove("hidden");
-  elements.vehicleSummary.innerHTML = `<strong>${escapeHtml(selected.route.route_name || "系統")} ${escapeHtml(displayHeadsign(selected.route.headsign))}</strong><span>${escapeHtml(label)}・${escapeHtml(vehicleLocationLabel(selected.vehicle, selected.trip, selected.routeData))}</span>`;
+  elements.vehicleSummary.innerHTML = `<strong>${escapeHtml(selected.route.route_name || "系統")} ${escapeHtml(displayHeadsign(selected.route.headsign))}</strong><span>${escapeHtml(label)}・${escapeHtml(vehicleLocationLabel(selected.vehicle, selected.trip, selected.routeData))}</span><small>${escapeHtml(selected.correctionLabel || "配信時刻と停留所間所要時間から補正")}</small>`;
   elements.futureStopsList.innerHTML = future.map((stop) => `
     <li class="progress-item ${stop.isCurrent ? "current" : ""}">
       <span class="progress-marker" aria-hidden="true"></span>
       <div><strong>${escapeHtml(stop.stop_name)}</strong>${stop.platform_code ? `<small>${escapeHtml(stop.platform_code)}</small>` : ""}</div>
-      <span class="progress-time">${stop.minutes === 0 ? "現在付近" : `約${stop.minutes}分`}<small>${formatTimestampClock(stop.eta_ms)}頃</small></span>
+      <span class="progress-time">${escapeHtml(stop.eta_label || (stop.minutes === 0 ? "現在付近" : `約${stop.minutes}分`))}<small>${formatTimestampClock(stop.eta_ms)}頃</small></span>
     </li>`).join("");
 }
 

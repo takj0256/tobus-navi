@@ -1,27 +1,44 @@
-# 都バスナビ Phase 7
+# 都バスナビ Phase 8
 
-現在地周辺の同名停留所をまとめ、同じのりばを使用する複数系統の接近順、停留所上の現在位置、時刻表、後続停留所への推定到着時刻を表示するPWAです。
+現在地周辺の停留所を検索し、同じのりばを使う複数系統の時刻表・接近順・停留所間の推定位置・後続停留所への推定到着時刻を表示するPWAです。
 
-## Phase 7の変更
+## Phase 8の変更
 
-- 同じ `stop_id`（同じのりば）を使用する複数系統を1つの運行情報画面へ統合
-- 「こののりばの接近情報」から、系統をまたいで到着予定の早い順に車両を表示
-- 接近カードへ系統番号と行き先を常時表示
-- 系統ごとに、乗車停留所と手前の停留所を並べた「停留所上の現在位置」を追加
-- バス記号をタップすると、その車両の先の停留所と推定到着時刻を表示
-- これからの発車予定も複数系統を時刻順に統合
-- 本日の全時刻表は系統・行き先別に開閉表示
-- Phase 6のGTFSデータ形式をそのまま使用可能
-- Service Workerキャッシュを `tobus-navi-v8` に更新
+- GTFS-RTの車両位置を、前停留所から次停留所までのGTFS-JP所要時間に投影
+- 車両位置データの配信時刻から現在までの経過時間を補正
+- 表示位置を最大30秒先読み
+- 短い区間では先読みを区間所要時間の25%以下に制限
+- `STOPPED_AT`（停車中）では先読みしない
+- `INCOMING_AT`（接近中）は次停留所直前の範囲に制限
+- 連続する位置更新から進行速度を推定し、静的所要時間と合成
+- 到着時刻を「約3〜4分」の範囲表示に変更
+- 停留所列のバス記号を停留所間へ移動して表示
+- 各車両カードに「配信遅延○秒＋先読み○秒で補正」を表示
+- 更新周期を20秒から10秒へ短縮
+- Cloudflare Workerの障害時キャッシュを最大180秒から90秒へ短縮
+- Service Workerキャッシュを `tobus-navi-v9` に更新
 
-## データ更新について
+## 補正方法
 
-Phase 6で生成済みの次のデータがあれば、Phase 7適用時の再生成は不要です。
+走行中の車両は、概ね次の順で位置と到着時刻を推定します。
+
+1. GTFS-RTのGPS位置から、前停留所―次停留所間の進行率を求める
+2. データ取得時刻から現在までの経過時間を加える
+3. 最大30秒の先読みを加える
+4. GTFS-JP時刻表の停留所間所要時間で進行率を更新する
+5. 直近の複数位置がある場合は、観測速度と予定速度を合成する
+6. 後続停留所は時刻表上の所要時間を順に加算する
+
+道路形状や渋滞、信号待ちを完全には把握できないため、到着時刻は誤差範囲で表示します。これは東京都交通局の公式到着予測ではありません。
+
+## データ
+
+Phase 6以降で生成済みの次のデータをそのまま使用できます。Phase 8適用だけなら再生成は不要です。
 
 - `data/transit-index.json`
 - `data/routes/*.json`
 
-GTFS自体を更新する場合は次を実行します。
+GTFS自体を更新する場合：
 
 ```bash
 ./tools/update_gtfs.sh ~/Downloads/ToeiBus-GTFS.zip
@@ -53,7 +70,7 @@ python3 tools/validate_dataset.py data/transit-index.json
 python3 tools/check_realtime.py
 ```
 
-Android Chromeから直接取得できない場合は、同梱のCloudflare Workerを利用できます。
+Android Chromeから直接取得できない場合は、同梱のCloudflare Workerを公開します。
 
 ```bash
 cd worker
@@ -61,23 +78,15 @@ npx wrangler login
 npx wrangler deploy
 ```
 
-発行されたURLを `js/config.js` に設定します。
-
-```js
-export const REALTIME_PROXY_ENDPOINT = "https://your-worker.workers.dev";
-```
+発行されたURLを `js/config.js` の `REALTIME_PROXY_ENDPOINT` に設定します。
 
 ## GitHubへ反映
 
 ```bash
 git add .
-git commit -m "Integrate routes by platform and add stop-position tracking"
+git commit -m "Correct realtime position with segment travel times"
 git push
 ```
-
-## 推定到着について
-
-到着時刻は静的GTFSの予定時刻とVehiclePositionの更新時刻との差を後続停留所へ反映した推定値です。交通状況などにより実際と異なる場合があります。
 
 ## クレジット
 

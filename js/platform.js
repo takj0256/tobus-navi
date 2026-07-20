@@ -92,11 +92,17 @@ export function buildApproachLanes(routeEntries, vehicles, stopId, maxStops = 7)
 
     const markers = routeVehicles.map((item) => {
       const rawIndex = Math.max(0, Number(item.stopsAway || 0));
+      const progress = Number.isFinite(Number(item.segmentProgress)) ? Number(item.segmentProgress) : 1;
+      const segmentOffset = item.vehicle?.currentStatus === 1 ? 0 : Math.max(0, Math.min(0.98, 1 - progress));
       return {
         vehicle_id: item.combinedVehicleId || combinedVehicleKey(item),
         lane_index: Math.min(rawIndex, Math.max(0, stops.length - 1)),
-        is_overflow: rawIndex >= stops.length,
+        segment_offset: segmentOffset,
+        segment_progress: progress,
+        is_overflow: rawIndex + segmentOffset >= stops.length,
         minutes: item.minutes,
+        eta_label: item.etaLabel,
+        correction_label: item.correctionLabel,
         current_label: item.currentLabel,
         vehicle_label: item.vehicle?.vehicle?.label || item.vehicle?.vehicle?.id || "バス",
       };

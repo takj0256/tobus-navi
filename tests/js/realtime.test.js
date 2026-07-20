@@ -2,11 +2,14 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   buildFutureStopEstimates,
+  buildMotionModel,
   decodeGtfsRealtime,
   estimateVehicleProgress,
   fetchRealtimeVehicles,
+  formatEtaRange,
   isRealtimeFeedStale,
   realtimeFeedAgeMs,
+  recordVehicleObservations,
 } from "../../js/realtime.js";
 import { scheduledTimestampMs } from "../../js/timetable.js";
 
@@ -126,4 +129,106 @@ test("フィードの経過時間と古さを判定する", () => {
   assert.equal(realtimeFeedAgeMs(feed, nowMs), 120000);
   assert.equal(isRealtimeFeedStale(feed, nowMs, 90000), true);
   assert.equal(isRealtimeFeedStale(feed, nowMs, 180000), false);
+});
+
+
+const movingRouteData = {
+  stops: {
+    p: { stop_name: "前停留所", lat: 35.0, lon: 139.0 },
+    n: { stop_name: "次停留所", lat: 35.0, lon: 139.04 },
+    t: { stop_name: "乗車停留所", lat: 35.0, lon: 139.08 },
+  },
+  services: {
+    calendars: {
+      svc: { start_date: "20260101", end_date: "20261231", weekdays: [1, 1, 1, 1, 1, 1, 1] },
+    },
+    exceptions: {},
+  },
+};
+const movingTrip = {
+  trip_id: "moving",
+  service_id: "svc",
+  headsign: "終点",
+  direction_id: "0",
+  stop_times: [
+    ["p", 36000, 36000, 1],
+    ["n", 36240, 36240, 2],
+    ["t", 36540, 36540, 3],
+  ],
+};
+
+function movingVehicle(timestampMs, longitude = 139.01, status = 2) {
+  return {
+    entityId: "moving-entity",
+    trip: { tripId: "moving", startDate: "20260719" },
+    currentStopSequence: 2,
+    currentStatus: status,
+    timestamp: Math.floor(timestampMs / 1000),
+    stopId: "n",
+    position: { latitude: 35.0, longitude },
+    vehicle: { id: "moving-bus", label: "M1" },
+  };
+}
+
+test("配信遅延に最大30秒の先読みを加えて停留所間を補間する", () => {
+  const observationMs = scheduledTimestampMs("20260719", 36100);
+  const nowMs = observationMs + 20_000;
+  const vehicle = movingVehicle(observationMs);
+  const withoutLead = estimateVehicleProgress(vehicle, movingTrip, movingRouteData, "t", nowMs, {
+    anticipationMaxSeconds: 0,
+  });
+  const corrected = estimateVehicleProgress(vehicle, movingTrip, movingRouteData, "t", nowMs, {
+    anticipationMaxSeconds: 30,
+    anticipationSegmentRatio: 0.25,
+  });
+  assert.equal(Math.round(corrected.anticipationSeconds), 30);
+  assert.ok(corrected.segmentProgress > corrected.observedProgress);
+  assert.ok(corrected.targetEtaMs < withoutLead.targetEtaMs);
+  assert.ok(withoutLead.targetEtaMs - corrected.targetEtaMs >= 29_000);
+  assert.match(corrected.correctionLabel, /先読み30秒/);
+});
+
+test("短い停留所間では先読みを区間時間の25%に制限する", () => {
+  const shortTrip = {
+    ...movingTrip,
+    stop_times: [["p", 36000, 36000, 1], ["n", 36060, 36060, 2], ["t", 36360, 36360, 3]],
+  };
+  const observationMs = scheduledTimestampMs("20260719", 36020);
+  const model = buildMotionModel(movingVehicle(observationMs), shortTrip, movingRouteData, "20260719", observationMs, {
+    anticipationMaxSeconds: 30,
+    anticipationSegmentRatio: 0.25,
+  });
+  assert.equal(model.segmentDurationSeconds, 60);
+  assert.equal(model.anticipationSeconds, 15);
+});
+
+test("停車中は30秒先読みを適用しない", () => {
+  const observationMs = scheduledTimestampMs("20260719", 36240);
+  const vehicle = movingVehicle(observationMs, 139.04, 1);
+  const model = buildMotionModel(vehicle, movingTrip, movingRouteData, "20260719", observationMs + 20_000, {
+    anticipationMaxSeconds: 30,
+  });
+  assert.equal(model.isStopped, true);
+  assert.equal(model.anticipationSeconds, 0);
+  assert.equal(model.segmentProgress, 1);
+});
+
+test("連続する位置観測を履歴として保持する", () => {
+  const history = new Map();
+  const firstMs = scheduledTimestampMs("20260719", 36060);
+  const secondMs = firstMs + 20_000;
+  recordVehicleObservations(history, { vehicles: [movingVehicle(firstMs, 139.005)] });
+  recordVehicleObservations(history, { vehicles: [movingVehicle(secondMs, 139.012)] });
+  assert.equal(history.get("moving-bus").length, 2);
+  const model = buildMotionModel(movingVehicle(secondMs, 139.012), movingTrip, movingRouteData, "20260719", secondMs + 10_000, {
+    observationHistory: history,
+  });
+  assert.ok(model.progressRate > 0);
+  assert.ok(model.segmentProgress > model.observedProgress);
+});
+
+test("到着予測は単一値ではなく誤差範囲を表示できる", () => {
+  const nowMs = Date.parse("2026-07-19T09:00:00+09:00");
+  assert.equal(formatEtaRange(nowMs + 20_000, nowMs + 40_000, nowMs), "まもなく");
+  assert.match(formatEtaRange(nowMs + 70_000, nowMs + 150_000, nowMs), /約1〜3分/);
 });

@@ -1,46 +1,48 @@
-# UbuntuでPhase 7を既存リポジトリへ適用
+# UbuntuでPhase 8を既存リポジトリへ適用
 
 ## 1. ZIPを展開
 
 ```bash
 cd ~/Downloads
-rm -rf tobus-navi-pwa-phase7
-unzip tobus-navi-pwa-phase7.zip
+rm -rf tobus-navi-pwa-phase8
+unzip tobus-navi-pwa-phase8.zip
 ```
 
-## 2. Gitリポジトリへ移動
+## 2. Gitリポジトリを確認
+
+リポジトリが `~/tobus-navi` にある例です。
 
 ```bash
 cd ~/tobus-navi
 REPO="$(git rev-parse --show-toplevel)"
-printf '更新先: %s\n' "$REPO"
+echo "$REPO"
 ```
 
-`/` または空欄ならコピーしないでください。
+`/`、空文字、`.git` が存在しない場所ならコピーしないでください。
 
 ## 3. 安全確認付きで上書き
 
 ```bash
-SOURCE="$HOME/Downloads/tobus-navi-pwa-phase7"
+SOURCE="$HOME/Downloads/tobus-navi-pwa-phase8"
 
 if [[ -z "$REPO" || "$REPO" == "/" || ! -d "$REPO/.git" ]]; then
-  echo "危険または不正な更新先のため中止: $REPO" >&2
+  echo "不正な更新先のため中止: $REPO" >&2
   exit 1
 fi
 
 rsync -av --no-group "$SOURCE/" "$REPO/"
 ```
 
-## 4. データを確認
+## 4. GTFSデータを確認
 
-Phase 6の正式データをそのまま利用できます。
+Phase 6以降の正式データをそのまま利用できます。
 
 ```bash
 cd "$REPO"
 python3 tools/validate_dataset.py data/transit-index.json
 ```
 
-GTFSを更新したい場合だけ再生成します。
+データ自体を更新する場合のみ再生成します。
 
 ```bash
 ./tools/update_gtfs.sh ~/Downloads/ToeiBus-GTFS.zip
@@ -62,24 +64,15 @@ python3 tools/validate_dataset.py data/transit-index.json
 python3 tools/serve.py
 ```
 
-```text
-http://127.0.0.1:8000
-```
-
-確認項目：
-
-- 同じのりばを使用する複数系統が「こののりばの接近情報」にまとまる
-- 接近中のバスが系統をまたいで到着順に並ぶ
-- 各接近カードに系統番号と行き先が表示される
-- 「停留所上の現在位置」に乗車停留所と手前の停留所が表示される
-- バス記号をタップすると、その車両のこの先の推定到着が開く
-- 発車予定と本日の時刻表が複数系統に対応する
+Chromeで `http://127.0.0.1:8000` を開きます。
 
 ## 7. GitHubへ反映
 
 ```bash
 git status
 git add .
-git commit -m "Integrate routes by platform and add stop-position tracking"
+git commit -m "Correct realtime position with segment travel times"
 git push
 ```
+
+公開後、AndroidのPWAを完全に終了して開き直してください。古い表示が残る場合はサイトデータを削除してください。

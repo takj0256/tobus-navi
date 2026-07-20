@@ -1,6 +1,6 @@
 const SOURCE = "https://api-public.odpt.org/api/v4/gtfs/realtime/ToeiBus";
 const UPSTREAM_TIMEOUT_MS = 8_000;
-const STALE_CACHE_SECONDS = 180;
+const STALE_CACHE_SECONDS = 90;
 
 export default {
   async fetch(request, env, ctx) {

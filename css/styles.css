@@ -647,7 +647,7 @@ footer p { margin-bottom: .35rem; }
   .platform-panel .route-list { margin-left: 1.1rem; }
 }
 
-/* Phase 7: platform-level integrated arrivals and stop-position lanes */
+/* Phase 7+: platform-level integrated arrivals and stop-position lanes */
 .platform-live-button {
   width: calc(100% - 1.55rem);
   min-height: 58px;
@@ -894,4 +894,30 @@ footer p { margin-bottom: .35rem; }
   .approach-stop { width: 84px; min-width: 84px; }
   .approach-stop-name { max-width: 78px; }
   .approach-lane-header small { width: 100%; margin-left: 0; }
+}
+
+/* Phase 8: 配信遅延と停留所間所要時間による位置補正 */
+.live-correction {
+  display: block;
+  margin-top: .18rem;
+  color: var(--muted);
+  font-size: .7rem;
+}
+.vehicle-summary small {
+  display: block;
+  margin-top: .2rem;
+  color: var(--muted);
+  font-size: .7rem;
+}
+.approach-track { --stop-step: 94px; }
+.approach-bus-marker {
+  transform: translateX(calc(var(--segment-offset, 0) * var(--stop-step)));
+  transition: transform .25s ease;
+}
+.approach-bus-marker small {
+  max-width: 64px;
+  white-space: nowrap;
+}
+@media (max-width: 520px) {
+  .approach-track { --stop-step: 84px; }
 }
