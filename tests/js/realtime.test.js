@@ -232,3 +232,108 @@ test("到着予測は単一値ではなく誤差範囲を表示できる", () =>
   assert.equal(formatEtaRange(nowMs + 20_000, nowMs + 40_000, nowMs), "まもなく");
   assert.match(formatEtaRange(nowMs + 70_000, nowMs + 150_000, nowMs), /約1〜3分/);
 });
+
+const cumulativeRouteData = {
+  stops: {
+    before: { stop_name: "千石一丁目", lat: 35.0, lon: 139.00 },
+    ishijima: { stop_name: "石島", lat: 35.0, lon: 139.01 },
+    ogibashi: { stop_name: "扇橋一丁目", lat: 35.0, lon: 139.02 },
+    sarue: { stop_name: "猿江一丁目", lat: 35.0, lon: 139.03 },
+  },
+  services: movingRouteData.services,
+};
+const cumulativeTrip = {
+  trip_id: "cumulative",
+  service_id: "svc",
+  headsign: "錦糸町駅前",
+  direction_id: "0",
+  stop_times: [
+    ["before", 36000, 36000, 1],
+    ["ishijima", 36120, 36120, 2],
+    ["ogibashi", 36360, 36360, 3],
+    ["sarue", 36540, 36540, 4],
+  ],
+};
+
+function cumulativeVehicle({ timestampMs, sequence = 2, status = 2, longitude = 139.005, stopId = "ishijima" }) {
+  return {
+    entityId: "cumulative-entity",
+    trip: { tripId: "cumulative", startDate: "20260719" },
+    currentStopSequence: sequence,
+    currentStatus: status,
+    timestamp: Math.floor(timestampMs / 1000),
+    stopId,
+    position: { latitude: 35.0, longitude },
+    vehicle: { id: "cumulative-bus", label: "G702" },
+  };
+}
+
+test("GPSがcurrent_stop_sequenceより先なら実際に近い後続区間へ補正する", () => {
+  const nowMs = scheduledTimestampMs("20260719", 36390);
+  const vehicle = cumulativeVehicle({
+    timestampMs: nowMs,
+    sequence: 2,
+    status: 2,
+    longitude: 139.025,
+  });
+  const model = buildMotionModel(vehicle, cumulativeTrip, cumulativeRouteData, "20260719", nowMs, {
+    anticipationMaxSeconds: 0,
+  });
+  assert.equal(model.previousIndex, 2);
+  assert.equal(model.nextIndex, 3);
+  assert.ok(model.segmentProgress > 0.45 && model.segmentProgress < 0.55);
+  const estimate = estimateVehicleProgress(vehicle, cumulativeTrip, cumulativeRouteData, "sarue", nowMs, {
+    anticipationMaxSeconds: 0,
+  });
+  assert.match(estimate.currentLabel, /扇橋一丁目〜猿江一丁目間/);
+  assert.ok(estimate.minutes >= 1 && estimate.minutes <= 2);
+});
+
+test("石島停車中から猿江一丁目までは各区間時間を累積して7分とする", () => {
+  const nowMs = scheduledTimestampMs("20260719", 36120);
+  const vehicle = cumulativeVehicle({
+    timestampMs: nowMs,
+    sequence: 2,
+    status: 1,
+    longitude: 139.01,
+  });
+  const estimate = estimateVehicleProgress(vehicle, cumulativeTrip, cumulativeRouteData, "sarue", nowMs, {
+    anticipationMaxSeconds: 0,
+  });
+  assert.equal(estimate.minutes, 7);
+  assert.equal(estimate.targetEtaMs - nowMs, 420_000);
+});
+
+test("後続停留所の到着予測は石島4分・猿江7分のように単調増加する", () => {
+  const nowMs = scheduledTimestampMs("20260719", 36120);
+  const vehicle = cumulativeVehicle({
+    timestampMs: nowMs,
+    sequence: 2,
+    status: 1,
+    longitude: 139.01,
+  });
+  const future = buildFutureStopEstimates(vehicle, cumulativeTrip, cumulativeRouteData, nowMs, 10, {
+    anticipationMaxSeconds: 0,
+  });
+  assert.deepEqual(future.map((item) => item.stop_name), ["石島", "扇橋一丁目", "猿江一丁目"]);
+  assert.equal(future[1].eta_ms - nowMs, 240_000);
+  assert.equal(future[2].eta_ms - nowMs, 420_000);
+  assert.ok(future[0].eta_ms < future[1].eta_ms && future[1].eta_ms < future[2].eta_ms);
+});
+
+test("配信遅延が1区間を超える場合は次の区間まで進行させる", () => {
+  const observationMs = scheduledTimestampMs("20260719", 36000);
+  const nowMs = observationMs + 350_000;
+  const vehicle = cumulativeVehicle({
+    timestampMs: observationMs,
+    sequence: 2,
+    status: 2,
+    longitude: 139.005,
+  });
+  const model = buildMotionModel(vehicle, cumulativeTrip, cumulativeRouteData, "20260719", nowMs, {
+    anticipationMaxSeconds: 0,
+  });
+  assert.equal(model.previousIndex, 2);
+  assert.equal(model.nextIndex, 3);
+  assert.ok(model.segmentProgress > 0.2);
+});

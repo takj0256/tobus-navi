@@ -13,6 +13,47 @@ export function haversineMeters(lat1, lon1, lat2, lon2) {
   return EARTH_RADIUS_METERS * c;
 }
 
+export function projectPointToSegmentMeters(pointLat, pointLon, startLat, startLon, endLat, endLon) {
+  const values = [pointLat, pointLon, startLat, startLon, endLat, endLon].map(Number);
+  if (!values.every(Number.isFinite)) {
+    return { fraction: NaN, distanceMeters: Infinity, segmentLengthMeters: NaN };
+  }
+
+  const [pLat, pLon, aLat, aLon, bLat, bLon] = values;
+  const toRadians = (degrees) => degrees * Math.PI / 180;
+  const referenceLatitude = toRadians((pLat + aLat + bLat) / 3);
+  const scaleX = EARTH_RADIUS_METERS * Math.cos(referenceLatitude) * Math.PI / 180;
+  const scaleY = EARTH_RADIUS_METERS * Math.PI / 180;
+
+  const ax = aLon * scaleX;
+  const ay = aLat * scaleY;
+  const bx = bLon * scaleX;
+  const by = bLat * scaleY;
+  const px = pLon * scaleX;
+  const py = pLat * scaleY;
+  const dx = bx - ax;
+  const dy = by - ay;
+  const lengthSquared = dx * dx + dy * dy;
+
+  if (lengthSquared < 1) {
+    return {
+      fraction: 0,
+      distanceMeters: Math.hypot(px - ax, py - ay),
+      segmentLengthMeters: Math.sqrt(lengthSquared),
+    };
+  }
+
+  const rawFraction = ((px - ax) * dx + (py - ay) * dy) / lengthSquared;
+  const fraction = Math.min(1, Math.max(0, rawFraction));
+  const projectedX = ax + fraction * dx;
+  const projectedY = ay + fraction * dy;
+  return {
+    fraction,
+    distanceMeters: Math.hypot(px - projectedX, py - projectedY),
+    segmentLengthMeters: Math.sqrt(lengthSquared),
+  };
+}
+
 export function formatDistance(meters) {
   if (!Number.isFinite(meters)) return "距離不明";
   if (meters < 1000) return `${Math.round(meters)} m`;

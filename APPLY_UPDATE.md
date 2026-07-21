@@ -1,16 +1,16 @@
-# UbuntuでPhase 8を既存リポジトリへ適用
+# Phase 9 適用手順（Ubuntu／WSL Ubuntu）
 
 ## 1. ZIPを展開
 
 ```bash
 cd ~/Downloads
-rm -rf tobus-navi-pwa-phase8
-unzip tobus-navi-pwa-phase8.zip
+rm -rf tobus-navi-pwa-phase9
+unzip tobus-navi-pwa-phase9.zip
 ```
 
-## 2. Gitリポジトリを確認
+## 2. Gitリポジトリへ移動
 
-リポジトリが `~/tobus-navi` にある例です。
+保存先が `~/tobus-navi` の場合：
 
 ```bash
 cd ~/tobus-navi
@@ -18,12 +18,12 @@ REPO="$(git rev-parse --show-toplevel)"
 echo "$REPO"
 ```
 
-`/`、空文字、`.git` が存在しない場所ならコピーしないでください。
+`/` または空欄の場合は、以降のコピーを実行しないでください。
 
-## 3. 安全確認付きで上書き
+## 3. 更新ファイルを上書き
 
 ```bash
-SOURCE="$HOME/Downloads/tobus-navi-pwa-phase8"
+SOURCE="$HOME/Downloads/tobus-navi-pwa-phase9"
 
 if [[ -z "$REPO" || "$REPO" == "/" || ! -d "$REPO/.git" ]]; then
   echo "不正な更新先のため中止: $REPO" >&2
@@ -33,20 +33,16 @@ fi
 rsync -av --no-group "$SOURCE/" "$REPO/"
 ```
 
-## 4. GTFSデータを確認
+このZIPには正式GTFSデータを含めていません。既存の `data/transit-index.json` と `data/routes/` はそのまま残ります。
 
-Phase 6以降の正式データをそのまま利用できます。
+## 4. データ確認
 
 ```bash
 cd "$REPO"
 python3 tools/validate_dataset.py data/transit-index.json
 ```
 
-データ自体を更新する場合のみ再生成します。
-
-```bash
-./tools/update_gtfs.sh ~/Downloads/ToeiBus-GTFS.zip
-```
+Phase 6以降のデータ形式なら、GTFS再変換は不要です。
 
 ## 5. テスト
 
@@ -55,7 +51,6 @@ npm run check:js
 npm run test:js
 python3 -m py_compile tools/*.py tests/*.py
 python3 -m unittest discover -s tests -p "test_*.py" -v
-python3 tools/validate_dataset.py data/transit-index.json
 ```
 
 ## 6. ローカル確認
@@ -64,15 +59,24 @@ python3 tools/validate_dataset.py data/transit-index.json
 python3 tools/serve.py
 ```
 
-Chromeで `http://127.0.0.1:8000` を開きます。
+```text
+http://127.0.0.1:8000
+```
+
+確認点：
+
+- GPSが `current_stop_sequence` より先にある場合、実際に近い後続区間へ表示される
+- 石島停車中から猿江一丁目まで、各区間時間が累積される
+- 後続停留所の予測時刻が同じ「現在付近」にならず、順に増える
+- 配信遅延が1区間を超える場合、次の区間まで進行補正される
 
 ## 7. GitHubへ反映
 
 ```bash
 git status
 git add .
-git commit -m "Correct realtime position with segment travel times"
+git commit -m "Fix cumulative ETA and multi-segment realtime correction"
 git push
 ```
 
-公開後、AndroidのPWAを完全に終了して開き直してください。古い表示が残る場合はサイトデータを削除してください。
+公開後に古い表示が残る場合は、AndroidのPWAを完全終了して再起動してください。キャッシュ名は `tobus-navi-v10` です。

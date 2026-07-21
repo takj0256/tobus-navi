@@ -33,7 +33,6 @@ import {
   realtimeFeedAgeMs,
   realtimeStatusLabel,
   recordVehicleObservations,
-  vehicleLocationLabel,
 } from "./realtime.js";
 import {
   buildApproachLanes,
@@ -46,6 +45,10 @@ import {
   REALTIME_ANTICIPATION_MAX_SECONDS,
   REALTIME_ANTICIPATION_SEGMENT_RATIO,
   REALTIME_MAX_BACKOFF_MS,
+  REALTIME_SEGMENT_SEARCH_AHEAD,
+  REALTIME_SEGMENT_SEARCH_BEHIND,
+  REALTIME_SEGMENT_SNAP_MAX_METERS,
+  REALTIME_STOPPED_HOLD_SECONDS,
   REALTIME_REFRESH_MS,
   REALTIME_SOURCES,
   REALTIME_STALE_AFTER_MS,
@@ -570,6 +573,10 @@ function nextRealtimeDelayMs() {
   if (!state.realtimeFailureCount) return REALTIME_REFRESH_MS;
   return Math.min(
     REALTIME_MAX_BACKOFF_MS,
+  REALTIME_SEGMENT_SEARCH_AHEAD,
+  REALTIME_SEGMENT_SEARCH_BEHIND,
+  REALTIME_SEGMENT_SNAP_MAX_METERS,
+  REALTIME_STOPPED_HOLD_SECONDS,
     REALTIME_REFRESH_MS * (2 ** Math.min(state.realtimeFailureCount, 3)),
   );
 }
@@ -598,6 +605,10 @@ function renderRealtime() {
       anticipationMaxSeconds: REALTIME_ANTICIPATION_MAX_SECONDS,
       anticipationSegmentRatio: REALTIME_ANTICIPATION_SEGMENT_RATIO,
       observationHistory: state.vehicleObservationHistory,
+      segmentSearchAhead: REALTIME_SEGMENT_SEARCH_AHEAD,
+      segmentSearchBehind: REALTIME_SEGMENT_SEARCH_BEHIND,
+      maximumSegmentSnapMeters: REALTIME_SEGMENT_SNAP_MAX_METERS,
+      stoppedHoldSeconds: REALTIME_STOPPED_HOLD_SECONDS,
     },
   );
   const feedTime = state.realtimeFeed.timestamp ? formatTimestampClock(state.realtimeFeed.timestamp * 1000) : "不明";
@@ -709,10 +720,14 @@ function renderVehicleTracking(vehicles) {
     anticipationMaxSeconds: REALTIME_ANTICIPATION_MAX_SECONDS,
     anticipationSegmentRatio: REALTIME_ANTICIPATION_SEGMENT_RATIO,
     observationHistory: state.vehicleObservationHistory,
+    segmentSearchAhead: REALTIME_SEGMENT_SEARCH_AHEAD,
+    segmentSearchBehind: REALTIME_SEGMENT_SEARCH_BEHIND,
+    maximumSegmentSnapMeters: REALTIME_SEGMENT_SNAP_MAX_METERS,
+    stoppedHoldSeconds: REALTIME_STOPPED_HOLD_SECONDS,
   });
   const label = selected.vehicle.vehicle?.label || selected.vehicle.vehicle?.id || "選択したバス";
   elements.vehicleTrackingSection.classList.remove("hidden");
-  elements.vehicleSummary.innerHTML = `<strong>${escapeHtml(selected.route.route_name || "系統")} ${escapeHtml(displayHeadsign(selected.route.headsign))}</strong><span>${escapeHtml(label)}・${escapeHtml(vehicleLocationLabel(selected.vehicle, selected.trip, selected.routeData))}</span><small>${escapeHtml(selected.correctionLabel || "配信時刻と停留所間所要時間から補正")}</small>`;
+  elements.vehicleSummary.innerHTML = `<strong>${escapeHtml(selected.route.route_name || "系統")} ${escapeHtml(displayHeadsign(selected.route.headsign))}</strong><span>${escapeHtml(label)}・${escapeHtml(selected.currentLabel || "位置推定中")}</span><small>${escapeHtml(selected.correctionLabel || "配信時刻と停留所間所要時間から補正")}</small>`;
   elements.futureStopsList.innerHTML = future.map((stop) => `
     <li class="progress-item ${stop.isCurrent ? "current" : ""}">
       <span class="progress-marker" aria-hidden="true"></span>

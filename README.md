@@ -1,39 +1,38 @@
-# 都バスナビ Phase 8
+# 都バスナビ Phase 9
 
-現在地周辺の停留所を検索し、同じのりばを使う複数系統の時刻表・接近順・停留所間の推定位置・後続停留所への推定到着時刻を表示するPWAです。
+現在地周辺の都バス停留所を検索し、同じのりばを使う複数系統の時刻表、接近順、停留所間の推定位置、後続停留所への推定到着時刻を表示するPWAです。
 
-## Phase 8の変更
+## Phase 9の修正
 
-- GTFS-RTの車両位置を、前停留所から次停留所までのGTFS-JP所要時間に投影
-- 車両位置データの配信時刻から現在までの経過時間を補正
-- 表示位置を最大30秒先読み
-- 短い区間では先読みを区間所要時間の25%以下に制限
-- `STOPPED_AT`（停車中）では先読みしない
-- `INCOMING_AT`（接近中）は次停留所直前の範囲に制限
-- 連続する位置更新から進行速度を推定し、静的所要時間と合成
-- 到着時刻を「約3〜4分」の範囲表示に変更
-- 停留所列のバス記号を停留所間へ移動して表示
-- 各車両カードに「配信遅延○秒＋先読み○秒で補正」を表示
-- 更新周期を20秒から10秒へ短縮
-- Cloudflare Workerの障害時キャッシュを最大180秒から90秒へ短縮
-- Service Workerキャッシュを `tobus-navi-v9` に更新
+Phase 8では、GTFS-RTの `current_stop_sequence` が配信遅延によって古い場合でも、その停留所の直前区間に車両を固定していました。また、配信時刻から現在までに1区間以上進んだ場合でも、現在区間を越えて補正できませんでした。
 
-## 補正方法
+Phase 9では次のように修正しています。
 
-走行中の車両は、概ね次の順で位置と到着時刻を推定します。
+- GPS座標を、`current_stop_sequence` 前後の複数区間へ投影して最も近い走行区間を選択
+- `current_stop_sequence` より1〜3区間先にGPSがある場合も補正
+- 配信遅延と最大30秒の先読みが1区間を超えた場合、次の区間へ順次進める
+- 後続停留所までの所要時間を、現在区間の残り時間と各区間のGTFS時刻表から個別に累積
+- GTFSで時刻が同一または欠損していても、後続停留所の到着時刻が逆転しないよう保護
+- 停車情報が古い場合は、25秒の停車猶予後に次区間へ進行補正
+- 車両詳細の現在位置表示を、補正後の「前停留所〜次停留所間」に統一
+- Service Workerキャッシュを `tobus-navi-v10` へ更新
 
-1. GTFS-RTのGPS位置から、前停留所―次停留所間の進行率を求める
-2. データ取得時刻から現在までの経過時間を加える
-3. 最大30秒の先読みを加える
-4. GTFS-JP時刻表の停留所間所要時間で進行率を更新する
-5. 直近の複数位置がある場合は、観測速度と予定速度を合成する
-6. 後続停留所は時刻表上の所要時間を順に加算する
+## 今回の想定例
 
-道路形状や渋滞、信号待ちを完全には把握できないため、到着時刻は誤差範囲で表示します。これは東京都交通局の公式到着予測ではありません。
+石島停車中から、時刻表上で次の所要時間が設定されている場合：
+
+```text
+石島 → 扇橋一丁目：4分
+扇橋一丁目 → 猿江一丁目：3分
+```
+
+猿江一丁目への到着予測は、各区間を累積して約7分になります。
+
+配信時点では石島付近でも、GPS座標や配信遅延補正の結果、現在時刻では扇橋一丁目〜猿江一丁目間に進んでいると判断した場合は、その区間に車両を表示します。
 
 ## データ
 
-Phase 6以降で生成済みの次のデータをそのまま使用できます。Phase 8適用だけなら再生成は不要です。
+Phase 6以降で生成済みの次のデータをそのまま使用できます。Phase 9の適用だけならGTFSの再生成は不要です。
 
 - `data/transit-index.json`
 - `data/routes/*.json`
@@ -50,6 +49,8 @@ GTFS自体を更新する場合：
 python3 tools/serve.py
 ```
 
+ブラウザで次を開きます。
+
 ```text
 http://127.0.0.1:8000
 ```
@@ -64,29 +65,22 @@ python3 -m unittest discover -s tests -p "test_*.py" -v
 python3 tools/validate_dataset.py data/transit-index.json
 ```
 
-## リアルタイム配信の診断
-
-```bash
-python3 tools/check_realtime.py
-```
-
-Android Chromeから直接取得できない場合は、同梱のCloudflare Workerを公開します。
-
-```bash
-cd worker
-npx wrangler login
-npx wrangler deploy
-```
-
-発行されたURLを `js/config.js` の `REALTIME_PROXY_ENDPOINT` に設定します。
-
 ## GitHubへ反映
 
 ```bash
 git add .
-git commit -m "Correct realtime position with segment travel times"
+git commit -m "Fix cumulative ETA and multi-segment realtime correction"
 git push
 ```
+
+## 調整値
+
+`js/config.js` で次を調整できます。
+
+- `REALTIME_ANTICIPATION_MAX_SECONDS`：先読み上限
+- `REALTIME_SEGMENT_SEARCH_AHEAD`：GPSから検索する前方区間数
+- `REALTIME_SEGMENT_SNAP_MAX_METERS`：区間へ吸着させる最大距離
+- `REALTIME_STOPPED_HOLD_SECONDS`：停車情報を維持する秒数
 
 ## クレジット
 
