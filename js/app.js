@@ -27,13 +27,17 @@ import {
 } from "./timetable.js";
 import {
   buildFutureStopEstimates,
+  deserializeSegmentTravelHistory,
   fetchRealtimeVehicles,
   getApproachingVehicles,
   isRealtimeFeedStale,
   realtimeFeedAgeMs,
   realtimeStatusLabel,
+  recordSegmentTravelTimes,
   recordVehicleObservations,
+  serializeSegmentTravelHistory,
 } from "./realtime.js";
+import { fetchPhase11Estimates, phase11SegmentKey } from "./phase11.js";
 import {
   buildApproachLanes,
   combinedVehicleKey,
@@ -42,18 +46,20 @@ import {
   mergePlatformVehicles,
 } from "./platform.js";
 import {
-  REALTIME_ANTICIPATION_MAX_SECONDS,
-  REALTIME_ANTICIPATION_SEGMENT_RATIO,
+  REALTIME_INFERRED_PROGRESS_MAXIMUM,
   REALTIME_MAX_BACKOFF_MS,
-  REALTIME_SEGMENT_SEARCH_AHEAD,
-  REALTIME_SEGMENT_SEARCH_BEHIND,
-  REALTIME_SEGMENT_SNAP_MAX_METERS,
-  REALTIME_STOPPED_HOLD_SECONDS,
   REALTIME_REFRESH_MS,
   REALTIME_SOURCES,
   REALTIME_STALE_AFTER_MS,
   REALTIME_TIMEOUT_MS,
+  REALTIME_TRAFFIC_MAXIMUM_AGE_MS,
+  REALTIME_TRAFFIC_MAX_SAMPLES,
+  REALTIME_TRAFFIC_RECENT_WINDOW_MS,
+  REALTIME_TRAFFIC_STORAGE_KEY,
   REALTIME_VEHICLE_MAX_AGE_MS,
+  PHASE11_API_ENDPOINT,
+  PHASE11_REFRESH_MS,
+  PHASE11_TIMEOUT_MS,
 } from "./config.js";
 
 const elements = Object.fromEntries([
@@ -94,6 +100,9 @@ const state = {
   realtimeGeneration: 0,
   openStopGroups: new Set(),
   vehicleObservationHistory: new Map(),
+  segmentTravelHistory: loadSegmentTravelHistory(),
+  phase11Estimates: new Map(),
+  phase11FetchedAt: 0,
 };
 
 init();
@@ -440,13 +449,13 @@ async function openPlatformDetail(groupId, stopId, preferredRouteKey = "") {
   elements.routeDetail.classList.remove("hidden");
   elements.routeDetailEyebrow.textContent = `${platformLabel}・統合運行情報`;
   elements.routeDetailTitle.textContent = platformSelection.group.stop_name;
-  elements.routeDetailSubtitle.textContent = `${routes.length}系統の接近順・停留所上の現在位置をまとめて表示`;
+  elements.routeDetailSubtitle.textContent = `${routes.length}系統の接近順・停留所間の推定位置をまとめて表示`;
   elements.platformRouteSummary.innerHTML = routes.map((route) => (
     `<span class="route-filter-chip"><b>${escapeHtml(route.route_name || "系統")}</b>${escapeHtml(displayHeadsign(route.headsign))}</span>`
   )).join("");
   elements.routeDetailStatus.textContent = "時刻表データを読み込んでいます…";
   elements.liveBusList.innerHTML = loadingMarkup("複数系統のリアルタイム情報を準備しています");
-  elements.approachLaneList.innerHTML = loadingMarkup("停留所上の現在位置を準備しています");
+  elements.approachLaneList.innerHTML = loadingMarkup("停留所イベントから推定位置を準備しています");
   elements.upcomingDepartures.innerHTML = loadingMarkup("発車予定をまとめています");
   elements.dailyTimetable.innerHTML = "";
   renderVehicleTracking([]);
@@ -459,6 +468,7 @@ async function openPlatformDetail(groupId, stopId, preferredRouteKey = "") {
       routeData: await getRouteData(route.route_file),
     })));
     state.activeRouteData = state.activeRouteEntries[0]?.routeData || null;
+    await refreshPhase11Estimates(true);
     renderStaticSchedule();
     await refreshRealtime(false);
   } catch (error) {
@@ -519,6 +529,42 @@ function renderDailyTimetable() {
   state.timetableRenderedKey = renderKey;
 }
 
+async function refreshPhase11Estimates(force = false) {
+  if (!PHASE11_API_ENDPOINT || !state.activeRouteEntries.length) return;
+  if (!force && Date.now() - state.phase11FetchedAt < PHASE11_REFRESH_MS) return;
+  const unique = new Map();
+  for (const entry of state.activeRouteEntries) {
+    const routeId = entry.routeData?.route?.route_id || entry.route?.route_id || "";
+    for (const trip of entry.routeData?.trips || []) {
+      for (let index = 0; index < (trip.stop_times || []).length - 1; index += 1) {
+        const from = trip.stop_times[index];
+        const to = trip.stop_times[index + 1];
+        const key = phase11SegmentKey(routeId, trip.direction_id ?? "", from[0], to[0]);
+        if (!unique.has(key)) unique.set(key, {
+          segment_key: key,
+          route_id: routeId,
+          direction_id: trip.direction_id ?? "",
+          shape_id: trip.shape_id || "",
+          sequence: index,
+          from_stop_id: from[0],
+          to_stop_id: to[0],
+          scheduled_seconds: Math.max(15, Number(to[1]) - Number(from[2]) || 60),
+        });
+      }
+    }
+  }
+  try {
+    state.phase11Estimates = await fetchPhase11Estimates(
+      PHASE11_API_ENDPOINT,
+      [...unique.values()],
+      { timeoutMs: PHASE11_TIMEOUT_MS },
+    );
+    state.phase11FetchedAt = Date.now();
+  } catch (error) {
+    console.warn("Phase 11 estimates unavailable; using Phase 10 fallback", error);
+  }
+}
+
 async function refreshRealtime(userRequested = false) {
   if (!state.activeSelection || !state.activeRouteEntries.length) return;
   if (state.realtimeInFlight) {
@@ -544,6 +590,14 @@ async function refreshRealtime(userRequested = false) {
     if (generation !== state.realtimeGeneration || !state.activeSelection) return;
     state.realtimeFeed = feed;
     recordVehicleObservations(state.vehicleObservationHistory, feed);
+    const learnedSegments = recordSegmentTravelTimes(
+      state.segmentTravelHistory,
+      state.vehicleObservationHistory,
+      feed,
+      { maxSamples: REALTIME_TRAFFIC_MAX_SAMPLES },
+    );
+    if (learnedSegments > 0) saveSegmentTravelHistory();
+    await refreshPhase11Estimates(false);
     state.realtimeFailureCount = 0;
     renderRealtime();
   } catch (error) {
@@ -553,7 +607,7 @@ async function refreshRealtime(userRequested = false) {
     const retrySeconds = Math.round(nextRealtimeDelayMs() / 1000);
     elements.routeDetailStatus.textContent = `車両位置を取得できませんでした。${retrySeconds}秒後に再試行します。時刻表は利用できます。`;
     elements.liveBusList.innerHTML = realtimeErrorMarkup(error, retrySeconds);
-    elements.approachLaneList.innerHTML = `<p class="empty-message">リアルタイム情報を取得できないため、停留所上の現在位置を表示できません。</p>`;
+    elements.approachLaneList.innerHTML = `<p class="empty-message">リアルタイム情報を取得できないため、停留所間の推定位置を表示できません。</p>`;
   } finally {
     if (generation === state.realtimeGeneration) {
       state.realtimeInFlight = false;
@@ -573,10 +627,6 @@ function nextRealtimeDelayMs() {
   if (!state.realtimeFailureCount) return REALTIME_REFRESH_MS;
   return Math.min(
     REALTIME_MAX_BACKOFF_MS,
-  REALTIME_SEGMENT_SEARCH_AHEAD,
-  REALTIME_SEGMENT_SEARCH_BEHIND,
-  REALTIME_SEGMENT_SNAP_MAX_METERS,
-  REALTIME_STOPPED_HOLD_SECONDS,
     REALTIME_REFRESH_MS * (2 ** Math.min(state.realtimeFailureCount, 3)),
   );
 }
@@ -602,13 +652,12 @@ function renderRealtime() {
     nowMs,
     {
       maxVehicleAgeMs: REALTIME_VEHICLE_MAX_AGE_MS,
-      anticipationMaxSeconds: REALTIME_ANTICIPATION_MAX_SECONDS,
-      anticipationSegmentRatio: REALTIME_ANTICIPATION_SEGMENT_RATIO,
       observationHistory: state.vehicleObservationHistory,
-      segmentSearchAhead: REALTIME_SEGMENT_SEARCH_AHEAD,
-      segmentSearchBehind: REALTIME_SEGMENT_SEARCH_BEHIND,
-      maximumSegmentSnapMeters: REALTIME_SEGMENT_SNAP_MAX_METERS,
-      stoppedHoldSeconds: REALTIME_STOPPED_HOLD_SECONDS,
+      segmentTravelHistory: state.segmentTravelHistory,
+      inferredProgressMaximum: REALTIME_INFERRED_PROGRESS_MAXIMUM,
+      trafficRecentWindowMs: REALTIME_TRAFFIC_RECENT_WINDOW_MS,
+      trafficMaximumAgeMs: REALTIME_TRAFFIC_MAXIMUM_AGE_MS,
+      phase11Estimates: state.phase11Estimates,
     },
   );
   const feedTime = state.realtimeFeed.timestamp ? formatTimestampClock(state.realtimeFeed.timestamp * 1000) : "不明";
@@ -618,7 +667,7 @@ function renderRealtime() {
   const stale = isRealtimeFeedStale(state.realtimeFeed, nowMs, REALTIME_STALE_AFTER_MS);
   elements.routeDetailStatus.textContent = stale
     ? `位置情報が古い可能性があります（${ageLabel}・${sourceLabel}）。補正しながら自動再取得を継続します。`
-    : `接近中 ${vehicles.length}台・最終更新 ${feedTime}（${ageLabel}）・最大30秒先読み補正`;
+    : `接近中 ${vehicles.length}台・最終更新 ${feedTime}（${ageLabel}）・週間／先行車実績で混雑補正`;
 
   if (!vehicles.length) {
     elements.liveBusList.innerHTML = `<p class="empty-message">現在、こののりばへ向かう車両をGTFS-RT上で確認できません。予定時刻表をご利用ください。</p>`;
@@ -633,7 +682,7 @@ function renderRealtime() {
     const staleClass = stale ? "stale" : "";
     return `<button class="live-bus-card combined-live-card ${vehicleId === state.selectedVehicleId ? "selected" : ""} ${staleClass}" type="button" data-vehicle-id="${escapeHtml(vehicleId)}">
       <span class="live-bus-route"><b>${escapeHtml(item.route.route_name || "系統")}</b><span>${escapeHtml(displayHeadsign(item.route.headsign))}</span></span>
-      <span class="live-bus-top"><strong>${escapeHtml(label)}</strong><span class="live-status">${escapeHtml(realtimeStatusLabel(item.vehicle.currentStatus))}</span></span>
+      <span class="live-bus-top"><strong>${escapeHtml(label)}</strong><span class="live-status">${escapeHtml(item.vehicle.hasCurrentStatus ? realtimeStatusLabel(item.vehicle.currentStatus) : "位置推定")}</span></span>
       <span class="live-location">${escapeHtml(item.currentLabel)}</span>
       <span class="live-eta"><b>${escapeHtml(item.etaLabel || (item.minutes === 0 ? "まもなく" : `約${item.minutes}分`))}</b>・${item.stopsAway}停留所前</span>
       <span class="live-correction">${escapeHtml(item.correctionLabel || "時刻表と配信時刻から補正")}</span>
@@ -669,7 +718,7 @@ function renderApproachLanes(vehicles) {
         <strong>${escapeHtml(displayHeadsign(lane.route.headsign))}</strong>
         <small>${lane.markers.length ? `${lane.markers.length}台接近中` : "接近車両なし"}</small>
       </header>
-      <div class="approach-scroll" role="region" aria-label="${escapeHtml(lane.route.route_name || "系統")} ${escapeHtml(displayHeadsign(lane.route.headsign))}の停留所上の現在位置">
+      <div class="approach-scroll" role="region" aria-label="${escapeHtml(lane.route.route_name || "系統")} ${escapeHtml(displayHeadsign(lane.route.headsign))}の停留所間推定位置">
         <div class="approach-track">
           ${lane.stops.map((stop, index) => {
             const markers = lane.markers.filter((marker) => marker.lane_index === index);
@@ -717,13 +766,12 @@ function renderVehicleTracking(vehicles) {
   }
 
   const future = buildFutureStopEstimates(selected.vehicle, selected.trip, selected.routeData, Date.now(), 18, {
-    anticipationMaxSeconds: REALTIME_ANTICIPATION_MAX_SECONDS,
-    anticipationSegmentRatio: REALTIME_ANTICIPATION_SEGMENT_RATIO,
     observationHistory: state.vehicleObservationHistory,
-    segmentSearchAhead: REALTIME_SEGMENT_SEARCH_AHEAD,
-    segmentSearchBehind: REALTIME_SEGMENT_SEARCH_BEHIND,
-    maximumSegmentSnapMeters: REALTIME_SEGMENT_SNAP_MAX_METERS,
-    stoppedHoldSeconds: REALTIME_STOPPED_HOLD_SECONDS,
+    segmentTravelHistory: state.segmentTravelHistory,
+    inferredProgressMaximum: REALTIME_INFERRED_PROGRESS_MAXIMUM,
+    trafficRecentWindowMs: REALTIME_TRAFFIC_RECENT_WINDOW_MS,
+    trafficMaximumAgeMs: REALTIME_TRAFFIC_MAXIMUM_AGE_MS,
+    phase11Estimates: state.phase11Estimates,
   });
   const label = selected.vehicle.vehicle?.label || selected.vehicle.vehicle?.id || "選択したバス";
   elements.vehicleTrackingSection.classList.remove("hidden");
@@ -743,6 +791,8 @@ function closeRouteDetail() {
   state.activeSelection = null;
   state.activeRouteData = null;
   state.activeRouteEntries = [];
+  state.phase11Estimates = new Map();
+  state.phase11FetchedAt = 0;
   state.selectedVehicleId = null;
   elements.routeDetail.classList.add("hidden");
 }
@@ -915,6 +965,28 @@ function loadArray(key) {
 
 function saveArray(key, value) {
   localStorage.setItem(key, JSON.stringify(value));
+}
+
+function loadSegmentTravelHistory() {
+  try {
+    const stored = JSON.parse(localStorage.getItem(REALTIME_TRAFFIC_STORAGE_KEY) || "[]");
+    return deserializeSegmentTravelHistory(stored, Date.now(), REALTIME_TRAFFIC_MAXIMUM_AGE_MS);
+  } catch {
+    return new Map();
+  }
+}
+
+function saveSegmentTravelHistory() {
+  try {
+    const stored = serializeSegmentTravelHistory(
+      state.segmentTravelHistory,
+      Date.now(),
+      REALTIME_TRAFFIC_MAXIMUM_AGE_MS,
+    );
+    localStorage.setItem(REALTIME_TRAFFIC_STORAGE_KEY, JSON.stringify(stored));
+  } catch (error) {
+    console.warn("区間所要時間の履歴を保存できませんでした。", error);
+  }
 }
 
 function formatDatasetDate(value) {

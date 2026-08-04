@@ -1,3 +1,24 @@
 name = "tobus-realtime-proxy"
 main = "worker.js"
 compatibility_date = "2026-07-01"
+
+[triggers]
+crons = ["* * * * *"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "tobus-phase11"
+database_id = "6888b506-2f45-4913-849e-57d9aff6c3a1"
+migrations_dir = "migrations"
+
+[[r2_buckets]]
+binding = "EVENT_BUCKET"
+bucket_name = "tobus-phase11-events"
+
+[vars]
+TRAFFIC_MONTHLY_LIMIT = "20000"
+TRAFFIC_STOP_RATIO = "0.95"
+TRAFFIC_SOFT_RATIO = "0.80"
+TRAFFIC_CACHE_SECONDS = "600"
+TRAFFIC_TIMEOUT_MS = "5000"
+HOLIDAY_DATE_KEYS = ""

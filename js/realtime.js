@@ -1,4 +1,9 @@
-import { haversineMeters, projectPointToSegmentMeters } from "./geo.js";
+import { haversineMeters } from "./geo.js";
+import {
+  applyWeeklyProfile,
+  effectiveCorrectionRatio,
+  phase11SegmentKey,
+} from "./phase11.js";
 import {
   findBestServiceDateForVehicle,
   formatTimestampClock,
@@ -211,6 +216,9 @@ export function estimateVehicleProgress(vehicle, trip, routeData, targetStopId, 
     segmentProgress: model.segmentProgress,
     observedProgress: model.observedProgress,
     positionSource: model.positionSource,
+    trafficLabel: model.trafficLabel,
+    trafficRatio: model.trafficRatio,
+    trafficSampleCount: model.trafficSampleCount,
     correctionLabel: buildCorrectionLabel(model),
   };
 }
@@ -260,180 +268,105 @@ export function buildMotionModel(vehicle, trip, routeData, serviceDate, nowMs = 
   const vehicleTimestampMs = Number(vehicle.timestamp || Math.floor(nowMs / 1000)) * 1000;
   const feedAgeSeconds = Math.max(0, (nowMs - vehicleTimestampMs) / 1000);
   const fallbackSegmentSeconds = routeMedianSegmentSeconds(stopTimes);
-  const status = Number(vehicle.currentStatus);
-  const observed = resolveObservedPosition(vehicle, trip, routeData, safeAnchorIndex, options);
+  const routeScope = realtimeRouteScope(vehicle, trip);
+  const historyOptions = {
+    recentWindowMs: options.trafficRecentWindowMs,
+    maximumAgeMs: options.trafficMaximumAgeMs,
+    phase11Estimates: options.phase11Estimates,
+    directionId: vehicle?.trip?.directionId ?? trip?.direction_id ?? "",
+  };
 
-  if (observed.type === "stop") {
-    const stopIndex = observed.currentIndex;
-    const stoppedHoldSeconds = Math.max(0, Number(options.stoppedHoldSeconds ?? 25));
-    const movableAgeSeconds = Math.max(0, feedAgeSeconds - stoppedHoldSeconds);
-    if (movableAgeSeconds <= 0 || stopIndex >= stopTimes.length - 1) {
-      const referenceSeconds = stopTimes[stopIndex]?.[1] ?? stopTimes[stopIndex]?.[2] ?? 0;
-      return {
-        isStopped: true,
-        currentIndex: stopIndex,
-        nextIndex: stopIndex,
-        previousIndex: stopIndex,
-        segmentDurationSeconds: 0,
-        observedProgress: 1,
-        segmentProgress: 1,
-        remainingSegmentSeconds: 0,
-        feedAgeSeconds,
-        anticipationSeconds: 0,
-        positionSource: observed.source,
-        delayMs: vehicleTimestampMs - scheduledTimestampMs(serviceDate, referenceSeconds),
-        uncertaintySeconds: Math.min(55, 18 + feedAgeSeconds * 0.2),
-        snapDistanceMeters: observed.snapDistanceMeters ?? 0,
-        speedFactor: 1,
-        progressRate: 0,
-      };
-    }
-
-    const firstDuration = segmentDurationSeconds(stopTimes, stopIndex, fallbackSegmentSeconds);
-    const anticipationSeconds = boundedAnticipation(firstDuration, options);
-    const advanced = advanceAlongSchedule(
-      stopTimes,
-      { type: "segment", previousIndex: stopIndex, nextIndex: stopIndex + 1, progress: 0 },
-      movableAgeSeconds + anticipationSeconds,
-      1,
-      fallbackSegmentSeconds,
-    );
-    return finalizeMotionModel({
-      advanced,
-      observedProgress: 0,
-      feedAgeSeconds,
-      anticipationSeconds,
-      positionSource: "stopped-extrapolated",
-      stopTimes,
-      serviceDate,
-      nowMs,
-      vehicleTimestampMs,
-      fallbackSegmentSeconds,
-      hasPosition: false,
-      hasHistory: false,
-      snapDistanceMeters: observed.snapDistanceMeters ?? 0,
-      speedFactor: 1,
-      observedPreviousIndex: stopIndex,
-    });
-  }
-
-  const initialDuration = segmentDurationSeconds(stopTimes, observed.previousIndex, fallbackSegmentSeconds);
-  const scheduledRate = 1 / initialDuration;
-  const historyRate = estimateHistoryProgressRate(
-    options.observationHistory,
-    vehicle,
-    routeData,
-    stopTimes[observed.previousIndex][0],
-    stopTimes[observed.nextIndex][0],
-    scheduledRate,
-  );
-  const speedFactor = Number.isFinite(historyRate)
-    ? clamp(historyRate / scheduledRate * 0.65 + 0.35, 0.35, 2.5)
-    : 1;
-  const anticipationSeconds = boundedAnticipation(initialDuration, options);
-  const correctionSeconds = feedAgeSeconds + anticipationSeconds;
-  const advanced = advanceAlongSchedule(
-    stopTimes,
-    observed,
-    correctionSeconds,
-    speedFactor,
-    fallbackSegmentSeconds,
-  );
-
-  return finalizeMotionModel({
-    advanced,
-    observedProgress: observed.progress,
-    feedAgeSeconds,
-    anticipationSeconds,
-    positionSource: observed.source,
-    stopTimes,
-    serviceDate,
-    nowMs,
-    vehicleTimestampMs,
-    fallbackSegmentSeconds,
-    hasPosition: observed.source.startsWith("gps"),
-    hasHistory: Number.isFinite(historyRate),
-    snapDistanceMeters: observed.snapDistanceMeters ?? 0,
-    speedFactor,
-    observedPreviousIndex: observed.previousIndex,
-  });
-}
-
-function finalizeMotionModel({
-  advanced,
-  observedProgress,
-  feedAgeSeconds,
-  anticipationSeconds,
-  positionSource,
-  stopTimes,
-  serviceDate,
-  nowMs,
-  fallbackSegmentSeconds,
-  hasPosition,
-  hasHistory,
-  snapDistanceMeters,
-  speedFactor,
-  observedPreviousIndex,
-}) {
-  if (advanced.type === "stop") {
-    const stopIndex = advanced.currentIndex;
-    const scheduledArrivalMs = scheduledTimestampMs(serviceDate, stopTimes[stopIndex]?.[1] ?? 0);
+  // 都営バス公開フィードの座標は停留所座標と一致するため、生GPSとして投影しない。
+  // current_statusが明示されたSTOPPED_ATだけを停車とし、それ以外は報告済み停留所から
+  // 次停留所へ進んでいる停留所イベントとして扱う。
+  if ((vehicle.hasCurrentStatus && Number(vehicle.currentStatus) === 1) || safeAnchorIndex >= stopTimes.length - 1) {
+    const referenceSeconds = stopTimes[safeAnchorIndex]?.[1] ?? stopTimes[safeAnchorIndex]?.[2] ?? 0;
     return {
       isStopped: true,
-      currentIndex: stopIndex,
-      nextIndex: stopIndex,
-      previousIndex: stopIndex,
+      currentIndex: safeAnchorIndex,
+      nextIndex: safeAnchorIndex,
+      previousIndex: safeAnchorIndex,
       segmentDurationSeconds: 0,
-      observedProgress,
+      scheduledSegmentSeconds: 0,
+      observedProgress: 1,
       segmentProgress: 1,
       remainingSegmentSeconds: 0,
       feedAgeSeconds,
-      anticipationSeconds,
-      positionSource,
-      speedFactor,
+      anticipationSeconds: 0,
+      positionSource: "explicit-stop-event",
+      delayMs: vehicleTimestampMs - scheduledTimestampMs(serviceDate, referenceSeconds),
+      uncertaintySeconds: Math.min(70, 25 + feedAgeSeconds * 0.25),
+      speedFactor: 1,
       progressRate: 0,
-      delayMs: nowMs - scheduledArrivalMs,
-      uncertaintySeconds: calculateUncertaintySeconds({
-        feedAgeSeconds,
-        segmentDurationSeconds: 0,
-        hasPosition,
-        hasHistory,
-      }),
-      snapDistanceMeters,
-      correctedSegments: Math.max(0, stopIndex - Number(observedPreviousIndex || 0)),
+      routeScope,
+      segmentTravelHistory: options.segmentTravelHistory,
+      trafficOptions: historyOptions,
+      trafficLabel: "停車中",
+      trafficRatio: 1,
+      trafficSampleCount: 0,
+      trafficSource: "stop-event",
+      progressCapped: false,
+      modelNowMs: nowMs,
     };
   }
 
-  const duration = segmentDurationSeconds(stopTimes, advanced.previousIndex, fallbackSegmentSeconds);
-  const remainingSegmentSeconds = Math.max(0, (1 - advanced.progress) * duration / Math.max(0.1, speedFactor));
-  const scheduledNextArrivalMs = scheduledTimestampMs(serviceDate, stopTimes[advanced.nextIndex]?.[1] ?? 0);
+  const previousIndex = safeAnchorIndex;
+  const nextIndex = safeAnchorIndex + 1;
+  const scheduledDuration = segmentDurationSeconds(stopTimes, previousIndex, fallbackSegmentSeconds);
+  const traffic = estimateSegmentTravelTime(
+    options.segmentTravelHistory,
+    routeScope,
+    stopTimes[previousIndex][0],
+    stopTimes[nextIndex][0],
+    scheduledDuration,
+    nowMs,
+    historyOptions,
+  );
+  const progressCap = clamp(Number(options.inferredProgressMaximum ?? 0.94), 0.5, 0.99);
+  const rawProgress = feedAgeSeconds / Math.max(15, traffic.seconds);
+  const segmentProgress = clamp(rawProgress, 0, progressCap);
+  const progressCapped = rawProgress >= progressCap;
+  const remainingSegmentSeconds = Math.max(
+    progressCapped ? Math.min(30, traffic.seconds * (1 - progressCap)) : 0,
+    (1 - segmentProgress) * traffic.seconds,
+  );
+  const scheduledNextArrivalMs = scheduledTimestampMs(serviceDate, stopTimes[nextIndex]?.[1] ?? 0);
+
   return {
     isStopped: false,
-    currentIndex: advanced.previousIndex,
-    nextIndex: advanced.nextIndex,
-    previousIndex: advanced.previousIndex,
-    segmentDurationSeconds: duration,
-    observedProgress,
-    segmentProgress: advanced.progress,
+    currentIndex: previousIndex,
+    nextIndex,
+    previousIndex,
+    segmentDurationSeconds: traffic.seconds,
+    scheduledSegmentSeconds: scheduledDuration,
+    observedProgress: 0,
+    segmentProgress,
     remainingSegmentSeconds,
     feedAgeSeconds,
-    anticipationSeconds,
-    positionSource,
-    speedFactor,
-    progressRate: speedFactor / Math.max(1, duration),
+    anticipationSeconds: 0,
+    positionSource: "stop-event-inferred",
+    speedFactor: scheduledDuration / Math.max(1, traffic.seconds),
+    progressRate: 1 / Math.max(1, traffic.seconds),
     delayMs: nowMs + remainingSegmentSeconds * 1000 - scheduledNextArrivalMs,
     uncertaintySeconds: calculateUncertaintySeconds({
       feedAgeSeconds,
-      segmentDurationSeconds: duration,
-      hasPosition,
-      hasHistory,
+      segmentDurationSeconds: traffic.seconds,
+      sampleCount: traffic.sampleCount,
+      progressCapped,
     }),
-    snapDistanceMeters,
-    correctedSegments: Math.max(0, advanced.previousIndex - Number(observedPreviousIndex || 0)),
+    routeScope,
+    segmentTravelHistory: options.segmentTravelHistory,
+    trafficOptions: historyOptions,
+    trafficLabel: traffic.label,
+    trafficRatio: traffic.ratio,
+    trafficSampleCount: traffic.sampleCount,
+    trafficSource: traffic.source,
+    progressCapped,
+    modelNowMs: nowMs,
   };
 }
 
-export function recordVehicleObservations(history, feed, maxEntries = 6) {
+export function recordVehicleObservations(history, feed, maxEntries = 12) {
   if (!(history instanceof Map)) return history;
   for (const vehicle of feed?.vehicles || []) {
     const key = vehicleObservationKey(vehicle);
@@ -446,11 +379,82 @@ export function recordVehicleObservations(history, feed, maxEntries = 6) {
       timestampMs,
       currentStopSequence: vehicle.currentStopSequence,
       currentStatus: vehicle.currentStatus,
+      hasCurrentStatus: Boolean(vehicle.hasCurrentStatus),
       stopId: vehicle.stopId,
+      tripId: vehicle.trip?.tripId || "",
+      routeId: vehicle.trip?.routeId || "",
+      directionId: vehicle.trip?.directionId ?? "",
       position: vehicle.position ? { ...vehicle.position } : null,
     });
     list.sort((a, b) => a.timestampMs - b.timestampMs);
     history.set(key, list.slice(-Math.max(2, maxEntries)));
+  }
+  return history;
+}
+
+export function recordSegmentTravelTimes(segmentHistory, vehicleHistory, feed, options = {}) {
+  if (!(segmentHistory instanceof Map) || !(vehicleHistory instanceof Map)) return 0;
+  const minimumSeconds = Math.max(5, Number(options.minimumSeconds ?? 15));
+  const maximumSeconds = Math.max(minimumSeconds, Number(options.maximumSeconds ?? 30 * 60));
+  const maxSamples = Math.max(3, Number(options.maxSamples ?? 48));
+  let added = 0;
+
+  for (const vehicle of feed?.vehicles || []) {
+    const vehicleKey = vehicleObservationKey(vehicle);
+    const observations = vehicleHistory.get(vehicleKey) || [];
+    if (observations.length < 2) continue;
+    const currentTimestampMs = Number(vehicle.timestamp || feed.timestamp || 0) * 1000;
+    const currentIndex = observations.findIndex((item) => item.timestampMs === currentTimestampMs);
+    if (currentIndex <= 0) continue;
+    const current = observations[currentIndex];
+    const previous = observations[currentIndex - 1];
+    if (!current.stopId || !previous.stopId || current.stopId === previous.stopId) continue;
+    if (current.tripId && previous.tripId && current.tripId !== previous.tripId) continue;
+    if (Number.isFinite(Number(current.currentStopSequence)) && Number.isFinite(Number(previous.currentStopSequence))) {
+      if (Number(current.currentStopSequence) - Number(previous.currentStopSequence) !== 1) continue;
+    }
+    const seconds = (current.timestampMs - previous.timestampMs) / 1000;
+    if (!Number.isFinite(seconds) || seconds < minimumSeconds || seconds > maximumSeconds) continue;
+
+    const routeScope = observationRouteScope(current);
+    const key = segmentHistoryKey(routeScope, previous.stopId, current.stopId);
+    const samples = segmentHistory.get(key) || [];
+    const sampleId = `${vehicleKey}:${current.timestampMs}`;
+    if (samples.some((sample) => sample.id === sampleId)) continue;
+    samples.push({ id: sampleId, seconds, timestampMs: current.timestampMs });
+    samples.sort((a, b) => a.timestampMs - b.timestampMs);
+    segmentHistory.set(key, samples.slice(-maxSamples));
+    added += 1;
+  }
+  return added;
+}
+
+export function serializeSegmentTravelHistory(segmentHistory, nowMs = Date.now(), maximumAgeMs = 14 * 86_400_000) {
+  if (!(segmentHistory instanceof Map)) return [];
+  const cutoff = nowMs - Math.max(60_000, Number(maximumAgeMs) || 0);
+  return [...segmentHistory.entries()].map(([key, samples]) => [
+    key,
+    (samples || []).filter((sample) => Number(sample.timestampMs) >= cutoff).slice(-48),
+  ]).filter(([, samples]) => samples.length > 0).slice(-1000);
+}
+
+export function deserializeSegmentTravelHistory(value, nowMs = Date.now(), maximumAgeMs = 14 * 86_400_000) {
+  const history = new Map();
+  if (!Array.isArray(value)) return history;
+  const cutoff = nowMs - Math.max(60_000, Number(maximumAgeMs) || 0);
+  for (const entry of value.slice(-1000)) {
+    if (!Array.isArray(entry) || typeof entry[0] !== "string" || !Array.isArray(entry[1])) continue;
+    const samples = entry[1].filter((sample) => (
+      sample && typeof sample.id === "string"
+      && Number.isFinite(Number(sample.seconds))
+      && Number(sample.seconds) >= 5
+      && Number(sample.timestampMs) >= cutoff
+    )).map((sample) => ({
+      id: sample.id,
+      seconds: Number(sample.seconds),
+      timestampMs: Number(sample.timestampMs),
+    })).slice(-48);
+    if (samples.length) history.set(entry[0], samples);
   }
   return history;
 }
@@ -471,125 +475,17 @@ export function formatEtaRange(minMs, maxMs, nowMs = Date.now()) {
 }
 
 function buildCorrectionLabel(model) {
-  if (model.positionSource === "stopped") return "停車中のため先読み補正なし";
+  if (model.isStopped) return "停車イベントを基準に表示";
   const age = Math.round(model.feedAgeSeconds);
-  const anticipation = Math.round(model.anticipationSeconds);
-  const gpsCorrection = model.positionSource === "gps-segment-corrected" ? "・GPSで走行区間を補正" : "";
-  const advance = model.correctedSegments > 0 ? `・配信時刻から${model.correctedSegments}区間先へ進行補正` : "";
-  return `配信遅延${age}秒＋先読み${anticipation}秒で補正${gpsCorrection}${advance}`;
-}
-
-function resolveObservedPosition(vehicle, trip, routeData, anchorIndex, options = {}) {
-  const stopTimes = trip?.stop_times || [];
-  const status = Number(vehicle.currentStatus);
-  if (status === 1 || stopTimes.length < 2) {
-    return { type: "stop", currentIndex: anchorIndex, source: "stopped", snapDistanceMeters: 0 };
-  }
-
-  const expectedPreviousIndex = Math.max(0, Math.min(stopTimes.length - 2, anchorIndex - 1));
-  const gpsCandidate = locateGpsSegment(
-    vehicle,
-    routeData,
-    stopTimes,
-    expectedPreviousIndex,
-    options,
-  );
-  if (gpsCandidate) return gpsCandidate;
-
-  let progress = status === 0 ? 0.85 : 0.35;
-  if (anchorIndex === 0) progress = 0;
-  return {
-    type: "segment",
-    previousIndex: expectedPreviousIndex,
-    nextIndex: expectedPreviousIndex + 1,
-    progress,
-    source: status === 0 ? "status-incoming" : "status-transit",
-    snapDistanceMeters: Infinity,
-  };
-}
-
-function locateGpsSegment(vehicle, routeData, stopTimes, expectedPreviousIndex, options = {}) {
-  const position = vehicle?.position;
-  if (!position || !Number.isFinite(Number(position.latitude)) || !Number.isFinite(Number(position.longitude))) return null;
-  const searchBehind = Math.max(0, Number(options.segmentSearchBehind ?? 1));
-  const searchAhead = Math.max(1, Number(options.segmentSearchAhead ?? 3));
-  const maximumSnapDistance = Math.max(80, Number(options.maximumSegmentSnapMeters ?? 350));
-  const first = Math.max(0, expectedPreviousIndex - searchBehind);
-  const last = Math.min(stopTimes.length - 2, expectedPreviousIndex + searchAhead);
-  let best = null;
-
-  for (let previousIndex = first; previousIndex <= last; previousIndex += 1) {
-    const nextIndex = previousIndex + 1;
-    const previousStop = routeData.stops?.[stopTimes[previousIndex][0]];
-    const nextStop = routeData.stops?.[stopTimes[nextIndex][0]];
-    if (!previousStop || !nextStop) continue;
-    const projection = projectPointToSegmentMeters(
-      Number(position.latitude),
-      Number(position.longitude),
-      Number(previousStop.lat),
-      Number(previousStop.lon),
-      Number(nextStop.lat),
-      Number(nextStop.lon),
-    );
-    if (!Number.isFinite(projection.fraction) || !Number.isFinite(projection.distanceMeters)) continue;
-
-    const sequenceDelta = previousIndex - expectedPreviousIndex;
-    const sequencePenalty = sequenceDelta < 0 ? Math.abs(sequenceDelta) * 90 : sequenceDelta * 18;
-    const incomingPenalty = Number(vehicle.currentStatus) === 0 && previousIndex === expectedPreviousIndex
-      ? Math.max(0, 0.72 - projection.fraction) * 80
-      : 0;
-    const score = projection.distanceMeters + sequencePenalty + incomingPenalty;
-    if (!best || score < best.score) {
-      best = {
-        type: "segment",
-        previousIndex,
-        nextIndex,
-        progress: projection.fraction,
-        source: previousIndex === expectedPreviousIndex ? "gps" : "gps-segment-corrected",
-        snapDistanceMeters: projection.distanceMeters,
-        score,
-      };
-    }
-  }
-
-  if (!best || best.snapDistanceMeters > maximumSnapDistance) return null;
-  if (Number(vehicle.currentStatus) === 0 && best.previousIndex === expectedPreviousIndex) {
-    best.progress = Math.max(0.78, best.progress);
-  }
-  return best;
-}
-
-function advanceAlongSchedule(stopTimes, initial, elapsedSeconds, speedFactor, fallbackSegmentSeconds) {
-  let remaining = Math.max(0, Number(elapsedSeconds) || 0);
-  let previousIndex = initial.previousIndex;
-  let nextIndex = initial.nextIndex;
-  let progress = clamp(Number(initial.progress) || 0, 0, 1);
-  const factor = Math.max(0.1, Number(speedFactor) || 1);
-
-  while (previousIndex >= 0 && nextIndex < stopTimes.length) {
-    const scheduledDuration = segmentDurationSeconds(stopTimes, previousIndex, fallbackSegmentSeconds);
-    const adjustedDuration = scheduledDuration / factor;
-    const segmentRemaining = Math.max(0, (1 - progress) * adjustedDuration);
-    if (remaining < segmentRemaining) {
-      progress = clamp(progress + remaining / adjustedDuration, 0, 0.995);
-      return { type: "segment", previousIndex, nextIndex, progress };
-    }
-
-    remaining -= segmentRemaining;
-    const arrivedIndex = nextIndex;
-    if (arrivedIndex >= stopTimes.length - 1) {
-      return { type: "stop", currentIndex: arrivedIndex };
-    }
-
-    const dwell = stopDwellSeconds(stopTimes, arrivedIndex);
-    if (remaining < dwell) return { type: "stop", currentIndex: arrivedIndex };
-    remaining -= dwell;
-    previousIndex = arrivedIndex;
-    nextIndex = arrivedIndex + 1;
-    progress = 0;
-  }
-
-  return { type: "stop", currentIndex: Math.max(0, stopTimes.length - 1) };
+  const sampleText = model.trafficSource === "external-correction"
+    ? `週間実績と周辺道路情報・${model.trafficLabel}`
+    : model.trafficSource === "weekly-profile"
+      ? `週間実績${model.trafficSampleCount}件・${model.trafficLabel}`
+      : model.trafficSampleCount > 0
+        ? `先行車${model.trafficSampleCount}件・${model.trafficLabel}`
+        : "先行車実績なし・時刻表基準";
+  const capText = model.progressCapped ? "・次停留所の更新待ち" : "";
+  return `停留所更新から${age}秒・${sampleText}${capText}`;
 }
 
 function travelSecondsFromModelToStop(model, stopTimes, targetIndex) {
@@ -598,7 +494,7 @@ function travelSecondsFromModelToStop(model, stopTimes, targetIndex) {
     if (targetIndex === model.currentIndex) return 0;
     let seconds = stopDwellSeconds(stopTimes, model.currentIndex);
     for (let index = model.currentIndex; index < targetIndex; index += 1) {
-      seconds += segmentDurationSeconds(stopTimes, index, routeMedianSegmentSeconds(stopTimes));
+      seconds += modelSegmentDuration(model, stopTimes, index);
       if (index + 1 < targetIndex) seconds += stopDwellSeconds(stopTimes, index + 1);
     }
     return seconds;
@@ -610,9 +506,23 @@ function travelSecondsFromModelToStop(model, stopTimes, targetIndex) {
   const fallback = routeMedianSegmentSeconds(stopTimes);
   for (let index = model.nextIndex; index < targetIndex; index += 1) {
     seconds += stopDwellSeconds(stopTimes, index);
-    seconds += segmentDurationSeconds(stopTimes, index, fallback);
+    seconds += modelSegmentDuration(model, stopTimes, index, fallback);
   }
   return seconds;
+}
+
+function modelSegmentDuration(model, stopTimes, previousIndex, fallback = routeMedianSegmentSeconds(stopTimes)) {
+  const scheduled = segmentDurationSeconds(stopTimes, previousIndex, fallback);
+  if (!model?.segmentTravelHistory || previousIndex + 1 >= stopTimes.length) return scheduled;
+  return estimateSegmentTravelTime(
+    model.segmentTravelHistory,
+    model.routeScope,
+    stopTimes[previousIndex][0],
+    stopTimes[previousIndex + 1][0],
+    scheduled,
+    model.modelNowMs || Date.now(),
+    model.trafficOptions,
+  ).seconds;
 }
 
 function segmentDurationSeconds(stopTimes, previousIndex, fallbackSeconds = 60) {
@@ -642,58 +552,116 @@ function routeMedianSegmentSeconds(stopTimes) {
   return values[Math.floor(values.length / 2)];
 }
 
-function boundedAnticipation(segmentSeconds, options) {
-  const maximum = Math.max(0, Number(options.anticipationMaxSeconds ?? 30));
-  const ratio = Math.max(0, Number(options.anticipationSegmentRatio ?? 0.25));
-  return Math.min(maximum, Math.max(0, segmentSeconds * ratio));
-}
-
-function estimateHistoryProgressRate(history, vehicle, routeData, previousStopId, nextStopId, scheduledRate) {
-  if (!(history instanceof Map)) return NaN;
-  const observations = history.get(vehicleObservationKey(vehicle)) || [];
-  const currentTimestampMs = Number(vehicle.timestamp || 0) * 1000;
-  const previous = [...observations].reverse().find((item) => (
-    item.timestampMs < currentTimestampMs
-    && Number(item.currentStatus) !== 1
-    && item.position
-  ));
-  if (!previous) return NaN;
-  const current = observedSegmentProgress(vehicle, routeData, previousStopId, nextStopId).progress;
-  const previousVehicle = { position: previous.position };
-  const before = observedSegmentProgress(previousVehicle, routeData, previousStopId, nextStopId).progress;
-  const deltaSeconds = (currentTimestampMs - previous.timestampMs) / 1000;
-  if (!Number.isFinite(current) || !Number.isFinite(before) || deltaSeconds < 3) return NaN;
-  const rate = (current - before) / deltaSeconds;
-  if (!Number.isFinite(rate) || rate <= 0) return NaN;
-  return clamp(rate, scheduledRate * 0.15, scheduledRate * 3);
-}
-
-function observedSegmentProgress(vehicle, routeData, previousStopId, nextStopId) {
-  const position = vehicle?.position;
-  const previousStop = routeData.stops?.[previousStopId];
-  const nextStop = routeData.stops?.[nextStopId];
-  if (!position || !previousStop || !nextStop) return { progress: NaN, source: "none" };
-  const projection = projectPointToSegmentMeters(
-    Number(position.latitude),
-    Number(position.longitude),
-    Number(previousStop.lat),
-    Number(previousStop.lon),
-    Number(nextStop.lat),
-    Number(nextStop.lon),
+export function estimateSegmentTravelTime(
+  segmentHistory,
+  routeScope,
+  previousStopId,
+  nextStopId,
+  scheduledSeconds,
+  nowMs = Date.now(),
+  options = {},
+) {
+  const scheduled = Math.max(15, Number(scheduledSeconds) || 60);
+  const phase11Key = phase11SegmentKey(routeScope, options?.directionId ?? "", previousStopId, nextStopId);
+  const phase11 = options?.phase11Estimates instanceof Map
+    ? options.phase11Estimates.get(phase11Key)
+    : options?.phase11Estimates?.[phase11Key];
+  const weekly = applyWeeklyProfile(scheduled, phase11?.profile || phase11);
+  const correction = phase11?.correction;
+  const correctionRatio = correction?.active === false ? 1 : effectiveCorrectionRatio(
+    correction?.correction_ratio ?? correction?.traffic_ratio ?? 1,
+    Math.max(0, (nowMs - Date.parse(correction?.observed_at || correction?.updated_at || 0)) / 60_000),
+    Number(correction?.downstream_segment_count || 0),
   );
+  const phase11Baseline = weekly.seconds * correctionRatio;
+  const recentWindowMs = Math.max(60_000, Number(options?.recentWindowMs ?? 45 * 60_000));
+  const maximumAgeMs = Math.max(recentWindowMs, Number(options?.maximumAgeMs ?? 14 * 86_400_000));
+  const samples = segmentHistory instanceof Map
+    ? segmentHistory.get(segmentHistoryKey(routeScope, previousStopId, nextStopId)) || []
+    : [];
+  const valid = samples.filter((sample) => (
+    Number.isFinite(Number(sample.seconds))
+    && Number(sample.seconds) >= 5
+    && Number(sample.timestampMs) >= nowMs - maximumAgeMs
+  ));
+  const recent = valid.filter((sample) => Number(sample.timestampMs) >= nowMs - recentWindowMs);
+  const candidates = recent.length >= 2 ? recent : sameTokyoHourSamples(valid, nowMs);
+  const selected = (candidates.length ? candidates : valid).slice(-12);
+  if (!selected.length) {
+    const phase11Active = weekly.source === "weekly-profile" || Math.abs(correctionRatio - 1) > 0.01;
+    return {
+      seconds: phase11Baseline,
+      ratio: phase11Baseline / scheduled,
+      label: phase11Active ? (Math.abs(correctionRatio - 1) > 0.01 ? "交通情報補正" : "週間実績") : "時刻表基準",
+      sampleCount: Number(phase11?.profile?.sample_count ?? phase11?.sample_count ?? 0),
+      phase11Active,
+      source: Math.abs(correctionRatio - 1) > 0.01 ? "external-correction"
+        : weekly.source === "weekly-profile" ? "weekly-profile" : "schedule",
+    };
+  }
+
+  const observed = robustMedian(selected.map((sample) => Number(sample.seconds)));
+  const confidenceWeight = Math.min(0.75, 0.25 + selected.length * 0.1);
+  const boundedObserved = clamp(observed, phase11Baseline * 0.5, phase11Baseline * 3);
+  const seconds = phase11Baseline * (1 - confidenceWeight) + boundedObserved * confidenceWeight;
+  const ratio = seconds / scheduled;
   return {
-    progress: projection.fraction,
-    source: Number.isFinite(projection.fraction) ? "gps" : "none",
+    seconds,
+    ratio,
+    label: trafficLabel(ratio),
+    sampleCount: selected.length,
+    phase11Active: weekly.source === "weekly-profile" || Math.abs(correctionRatio - 1) > 0.01,
+    source: "recent-history",
   };
 }
 
-function calculateUncertaintySeconds({ feedAgeSeconds, segmentDurationSeconds, hasPosition, hasHistory }) {
-  const base = 18
-    + Math.min(45, feedAgeSeconds * 0.18)
-    + Math.min(20, segmentDurationSeconds * 0.06)
-    + (hasPosition ? 0 : 20)
-    + (hasHistory ? -8 : 0);
-  return clamp(base, 20, 90);
+function sameTokyoHourSamples(samples, nowMs) {
+  const hour = Number(new Intl.DateTimeFormat("en-US", {
+    timeZone: "Asia/Tokyo", hour: "2-digit", hourCycle: "h23",
+  }).format(new Date(nowMs)));
+  return samples.filter((sample) => {
+    const sampleHour = Number(new Intl.DateTimeFormat("en-US", {
+      timeZone: "Asia/Tokyo", hour: "2-digit", hourCycle: "h23",
+    }).format(new Date(sample.timestampMs)));
+    return Math.abs(sampleHour - hour) <= 1 || Math.abs(sampleHour - hour) >= 23;
+  });
+}
+
+function robustMedian(values) {
+  const sorted = values.filter(Number.isFinite).sort((a, b) => a - b);
+  if (!sorted.length) return NaN;
+  const trim = sorted.length >= 7 ? 1 : 0;
+  const usable = sorted.slice(trim, sorted.length - trim);
+  const middle = Math.floor(usable.length / 2);
+  return usable.length % 2 ? usable[middle] : (usable[middle - 1] + usable[middle]) / 2;
+}
+
+function trafficLabel(ratio) {
+  if (ratio >= 1.35) return "混雑傾向";
+  if (ratio >= 1.12) return "やや遅め";
+  if (ratio <= 0.88) return "順調";
+  return "通常程度";
+}
+
+function realtimeRouteScope(vehicle, trip) {
+  return vehicle?.trip?.routeId || vehicle?.trip?.tripId || trip?.shape_id || trip?.headsign || "route";
+}
+
+function observationRouteScope(observation) {
+  return observation.routeId || observation.tripId || "route";
+}
+
+function segmentHistoryKey(routeScope, previousStopId, nextStopId) {
+  return `${routeScope || "route"}|${previousStopId || "?"}>${nextStopId || "?"}`;
+}
+
+function calculateUncertaintySeconds({ feedAgeSeconds, segmentDurationSeconds, sampleCount, progressCapped }) {
+  const base = 28
+    + Math.min(55, feedAgeSeconds * 0.22)
+    + Math.min(35, segmentDurationSeconds * 0.08)
+    + (sampleCount >= 4 ? -12 : sampleCount > 0 ? -5 : 20)
+    + (progressCapped ? 35 : 0);
+  return clamp(base, 30, 150);
 }
 
 function buildEtaRange(etaMs, nowMs, model, stopOffset = 0) {
@@ -724,7 +692,7 @@ export function vehicleLocationLabel(vehicle, trip, routeData, model = null) {
     const nextStopTime = trip?.stop_times?.[model.nextIndex];
     const previousName = previousStopTime ? routeData.stops?.[previousStopTime[0]]?.stop_name : "前停留所";
     const nextName = nextStopTime ? routeData.stops?.[nextStopTime[0]]?.stop_name : "次停留所";
-    return `${previousName || "前停留所"}〜${nextName || "次停留所"}間`;
+    return `${previousName || "前停留所"}〜${nextName || "次停留所"}間（推定）`;
   }
 
   const currentIndex = findCurrentStopIndex(vehicle, trip, routeData);
@@ -799,6 +767,7 @@ function parseVehicle(reader) {
     position: null,
     currentStopSequence: null,
     currentStatus: 2,
+    hasCurrentStatus: false,
     timestamp: 0,
     stopId: "",
     vehicle: {},
@@ -808,7 +777,10 @@ function parseVehicle(reader) {
     if (field === 1 && wire === 2) vehicle.trip = parseTripDescriptor(reader.readMessage());
     else if (field === 2 && wire === 2) vehicle.position = parsePosition(reader.readMessage());
     else if (field === 3 && wire === 0) vehicle.currentStopSequence = reader.readVarint();
-    else if (field === 4 && wire === 0) vehicle.currentStatus = reader.readVarint();
+    else if (field === 4 && wire === 0) {
+      vehicle.currentStatus = reader.readVarint();
+      vehicle.hasCurrentStatus = true;
+    }
     else if (field === 5 && wire === 0) vehicle.timestamp = reader.readVarint();
     else if (field === 7 && wire === 2) vehicle.stopId = reader.readString();
     else if (field === 8 && wire === 2) vehicle.vehicle = parseVehicleDescriptor(reader.readMessage());
