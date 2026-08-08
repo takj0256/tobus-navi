@@ -14,6 +14,12 @@ const UPSTREAM_TIMEOUT_MS = 8_000;
 const STALE_CACHE_SECONDS = 90;
 const EVENT_RETENTION_DAYS = 28;
 const STATE_KEY = "state/latest.json";
+const PROFILE_STALE_MS = 26 * 60 * 60_000;
+const ANOMALY_MINIMUM_SAMPLES = 8;
+const ANOMALY_MINIMUM_CONFIDENCE = 0.65;
+const TOKYO_DATE_FORMATTER = new Intl.DateTimeFormat("en-CA", {
+  timeZone: "Asia/Tokyo", year: "numeric", month: "2-digit", day: "2-digit",
+});
 
 export default {
   async fetch(request, env, ctx) {
@@ -60,8 +66,21 @@ export async function runScheduledCollection(env, now = new Date(), fetchImpl = 
   await env.EVENT_BUCKET.put(STATE_KEY, JSON.stringify(state));
 
   if (now.getUTCMinutes() < 2) await compactPreviousHour(env.EVENT_BUCKET, now);
+  const holidays = holidaySet(env);
+  const legacyUpgrade = await upgradeOneLegacyDailyObject(env.EVENT_BUCKET, now, holidays);
+  const dailyCompaction = legacyUpgrade.upgraded
+    ? { compacted: false, remainingCompletedDays: 1 }
+    : await compactOneCompletedTokyoDay(env.EVENT_BUCKET, now, holidays);
   const tokyo = tokyoClock(now);
-  if (tokyo.hour === 4 && tokyo.minute < 2 && env.DB) await aggregateProfiles(env, now);
+  if (env.DB) {
+    const aggregationDue = (tokyo.hour === 4 && tokyo.minute < 2)
+      || await profileAggregationIsStale(env.DB, now);
+    if (aggregationDue
+      && legacyUpgrade.remainingLegacyDays === 0
+      && dailyCompaction.remainingCompletedDays === 0) {
+      await runProfileAggregation(env, now);
+    }
+  }
   return { enabled: true, events: events.length };
 }
 
@@ -119,7 +138,9 @@ async function processAnomalies(events, state, env, now, fetchImpl) {
   const profileMap = await readProfilesForSegments(env.DB, events.map((event) => event.segment_key), now.getTime(), holidaySet(env));
   for (const event of events) {
     const profile = profileMap.get(event.segment_key);
-    if (!profile || Number(profile.confidence) < 0.3) continue;
+    if (!profile
+      || Number(profile.sample_count) < ANOMALY_MINIMUM_SAMPLES
+      || Number(profile.confidence) < ANOMALY_MINIMUM_CONFIDENCE) continue;
     const expected = Number(profile.profile_seconds || profile.median_seconds);
     const anomaly = detectPhase11Anomaly(event.seconds, expected, profile);
     event.anomalous = anomaly.candidate;
@@ -128,7 +149,7 @@ async function processAnomalies(events, state, env, now, fetchImpl) {
     const cachedTraffic = await readTrafficCache(event.segment_key, env, now.getTime());
     const prior = (state.candidates || []).map((item) => ({
       ...item,
-      sameVehicleConsecutive: item.vehicleId === event.vehicle_id,
+      sameVehicleConsecutive: isSameVehicleConsecutive(item, event),
       sameOrAdjacentSegment: item.segmentKey === event.segment_key,
     }));
     prior.push({
@@ -144,6 +165,8 @@ async function processAnomalies(events, state, env, now, fetchImpl) {
       candidate: true,
       vehicleId: event.vehicle_id,
       segmentKey: event.segment_key,
+      fromStopId: event.from_stop_id,
+      toStopId: event.to_stop_id,
       timestampMs: event.timestamp_ms,
     });
     await env.DB.prepare(`INSERT INTO anomalies
@@ -158,6 +181,11 @@ async function processAnomalies(events, state, env, now, fetchImpl) {
       await queryAndStoreTraffic(event, anomaly, env, now, fetchImpl);
     }
   }
+}
+
+export function isSameVehicleConsecutive(candidate, event) {
+  return candidate?.vehicleId === event?.vehicle_id
+    && candidate?.toStopId === event?.from_stop_id;
 }
 
 async function queryAndStoreTraffic(event, anomaly, env, now, fetchImpl) {
@@ -237,21 +265,36 @@ async function handleSingleEstimate(url, env, kind) {
 async function readProfilesForSegments(db, keys, atMs, holidays = new Set()) {
   const result = new Map();
   if (!db || !keys.length) return result;
-  const placeholders = keys.map(() => "?").join(",");
-  const query = `SELECT * FROM profiles WHERE segment_key IN (${placeholders}) AND day_type = ? AND time_bin = ?`;
-  const rows = await db.prepare(query).bind(...keys, phase11DayType(atMs, holidays), phase11TimeBin(atMs)).all();
-  for (const row of rows.results || []) result.set(row.segment_key, row);
+  for (const chunk of chunkUniqueKeys(keys)) {
+    const placeholders = chunk.map(() => "?").join(",");
+    const query = `SELECT * FROM profiles WHERE segment_key IN (${placeholders}) AND day_type = ? AND time_bin = ?`;
+    const rows = await db.prepare(query).bind(
+      ...chunk, phase11DayType(atMs, holidays), phase11TimeBin(atMs),
+    ).all();
+    for (const row of rows.results || []) result.set(row.segment_key, row);
+  }
   return result;
 }
 
 async function readCorrectionsForSegments(db, keys, atMs) {
   const result = new Map();
   if (!db || !keys.length) return result;
-  const placeholders = keys.map(() => "?").join(",");
-  const rows = await db.prepare(`SELECT * FROM corrections WHERE segment_key IN (${placeholders}) AND expires_at > ?`)
-    .bind(...keys, new Date(atMs).toISOString()).all();
-  for (const row of rows.results || []) result.set(row.segment_key, { ...row, active: true });
+  for (const chunk of chunkUniqueKeys(keys)) {
+    const placeholders = chunk.map(() => "?").join(",");
+    const rows = await db.prepare(`SELECT * FROM corrections WHERE segment_key IN (${placeholders}) AND expires_at > ?`)
+      .bind(...chunk, new Date(atMs).toISOString()).all();
+    for (const row of rows.results || []) result.set(row.segment_key, { ...row, active: true });
+  }
   return result;
+}
+
+export function chunkUniqueKeys(keys, maximum = 75) {
+  const unique = [...new Set((keys || []).filter(Boolean))];
+  const chunks = [];
+  for (let index = 0; index < unique.length; index += maximum) {
+    chunks.push(unique.slice(index, index + maximum));
+  }
+  return chunks;
 }
 
 async function compactPreviousHour(bucket, now) {
@@ -270,15 +313,161 @@ async function compactPreviousHour(bucket, now) {
   await bucket.delete(listed.objects.map((item) => item.key));
 }
 
-async function aggregateProfiles(env, now) {
+export async function compactOneCompletedTokyoDay(bucket, now, holidays = new Set()) {
+  const hourlyObjects = await listAll(bucket, "hourly/");
+  const today = tokyoDateKey(now.getTime());
+  const completedDays = [...new Set(hourlyObjects
+    .map((object) => hourlyObjectTokyoDate(object.key))
+    .filter((dateKey) => dateKey && dateKey < today))].sort();
+  if (!completedDays.length) return { compacted: false, remainingCompletedDays: 0 };
+
+  const dateKey = completedDays[0];
+  const sourceObjects = hourlyObjects.filter((object) => hourlyObjectTokyoDate(object.key) === dateKey);
+  const dailyKey = `daily-v2/${dateKey}.json`;
+  if (!(await bucket.head(dailyKey))) {
+    const events = [];
+    for (const object of sourceObjects) {
+      const payload = await readJsonObject(bucket, object.key, { events: [] });
+      events.push(...(payload.events || []));
+    }
+    await bucket.put(dailyKey, JSON.stringify({
+      version: 2,
+      generated_at: now.toISOString(),
+      date_key: dateKey,
+      source_keys: sourceObjects.map((object) => object.key),
+      groups: buildCompactDailyGroups(events, holidays),
+    }));
+  }
+  if (sourceObjects.length) await bucket.delete(sourceObjects.map((object) => object.key));
+  return {
+    compacted: true,
+    dateKey,
+    sourceObjects: sourceObjects.length,
+    remainingCompletedDays: completedDays.length - 1,
+  };
+}
+
+async function upgradeOneLegacyDailyObject(bucket, now, holidays = new Set()) {
+  const legacyObjects = await listAll(bucket, "daily/");
+  const compactObjects = await listAll(bucket, "daily-v2/");
+  const compactDates = new Set(compactObjects.map((object) => dailyObjectDate(object.key)).filter(Boolean));
+  const pending = legacyObjects
+    .map((object) => ({ object, dateKey: dailyObjectDate(object.key) }))
+    .filter((item) => item.dateKey && !compactDates.has(item.dateKey))
+    .sort((a, b) => a.dateKey.localeCompare(b.dateKey));
+  if (!pending.length) return { upgraded: false, remainingLegacyDays: 0 };
+  const { object, dateKey } = pending[0];
+  const payload = await readJsonObject(bucket, object.key, { events: [] });
+  await bucket.put(`daily-v2/${dateKey}.json`, JSON.stringify({
+    version: 2,
+    generated_at: now.toISOString(),
+    date_key: dateKey,
+    source_keys: payload.source_keys || [],
+    groups: buildCompactDailyGroups(payload.events || [], holidays),
+  }));
+  await bucket.delete(object.key);
+  return { upgraded: true, dateKey, remainingLegacyDays: pending.length - 1 };
+}
+
+export function buildCompactDailyGroups(events, holidays = new Set()) {
+  const groups = new Map();
+  for (const event of events || []) {
+    if (event.anomalous || !Number.isFinite(Number(event.seconds)) || !Number.isFinite(Number(event.timestamp_ms))) continue;
+    const dayType = phase11DayType(event.timestamp_ms, holidays);
+    const timeBin = phase11TimeBin(event.timestamp_ms);
+    const key = `${event.segment_key}|${dayType}|${timeBin}`;
+    let group = groups.get(key);
+    if (!group) {
+      group = {
+        segment_key: event.segment_key,
+        route_id: event.route_id,
+        direction_id: event.direction_id,
+        from_stop_id: event.from_stop_id,
+        to_stop_id: event.to_stop_id,
+        day_type: dayType,
+        time_bin: timeBin,
+        samples: [],
+      };
+      groups.set(key, group);
+    }
+    group.samples.push([Number(event.seconds), Number(event.timestamp_ms)]);
+  }
+  return [...groups.values()];
+}
+
+async function profileAggregationIsStale(db, now) {
+  const row = await db.prepare("SELECT MAX(generated_at) AS generated_at FROM profiles").first();
+  const generatedAt = Date.parse(row?.generated_at || "");
+  return !Number.isFinite(generatedAt) || now.getTime() - generatedAt >= PROFILE_STALE_MS;
+}
+
+async function runProfileAggregation(env, now) {
+  await writeAggregationStatus(env.DB, {
+    status: "running", started_at: now.toISOString(), completed_at: null,
+    source_objects: 0, profile_count: 0, error: null,
+  });
+  try {
+    const result = await aggregateProfiles(env, now);
+    await writeAggregationStatus(env.DB, {
+      status: "complete", started_at: now.toISOString(), completed_at: new Date().toISOString(),
+      source_objects: result.sourceObjects, profile_count: result.profiles, error: null,
+    });
+    return result;
+  } catch (error) {
+    await writeAggregationStatus(env.DB, {
+      status: "failed", started_at: now.toISOString(), completed_at: new Date().toISOString(),
+      source_objects: 0, profile_count: 0, error: String(error?.message || error).slice(0, 500),
+    });
+    throw error;
+  }
+}
+
+async function writeAggregationStatus(db, value) {
+  try {
+    await db.prepare(`INSERT INTO job_status
+      (job_name, status, started_at, completed_at, source_objects, profile_count, error)
+      VALUES ('profile-aggregation', ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(job_name) DO UPDATE SET status=excluded.status, started_at=excluded.started_at,
+      completed_at=excluded.completed_at, source_objects=excluded.source_objects,
+      profile_count=excluded.profile_count, error=excluded.error`).bind(
+      value.status, value.started_at, value.completed_at, value.source_objects, value.profile_count, value.error,
+    ).run();
+  } catch {
+    // 集計本体を診断テーブルの一時障害で止めない。
+  }
+}
+
+export async function aggregateProfiles(env, now) {
   const cutoff = now.getTime() - EVENT_RETENTION_DAYS * 86_400_000;
-  const objects = await listAll(env.EVENT_BUCKET, "hourly/");
+  const dailyObjects = await listAll(env.EVENT_BUCKET, "daily-v2/");
+  const hourlyObjects = await listAll(env.EVENT_BUCKET, "hourly/");
+  const dailyDates = new Set(dailyObjects.map((object) => dailyObjectDate(object.key)).filter(Boolean));
+  const objects = [
+    ...dailyObjects,
+    ...hourlyObjects.filter((object) => !dailyDates.has(hourlyObjectTokyoDate(object.key))),
+  ];
   const groups = new Map();
   const expired = [];
   const holidays = holidaySet(env);
   for (const object of objects) {
-    if (object.uploaded && object.uploaded.getTime() < cutoff) { expired.push(object.key); continue; }
+    const dailyDate = dailyObjectDate(object.key);
+    if ((dailyDate && dailyDate < tokyoDateKey(cutoff))
+      || (!dailyDate && object.uploaded && object.uploaded.getTime() < cutoff)) {
+      expired.push(object.key);
+      continue;
+    }
     const payload = await readJsonObject(env.EVENT_BUCKET, object.key, { events: [] });
+    for (const compact of payload.groups || []) {
+      const groupKey = `${compact.segment_key}|${compact.day_type}|${compact.time_bin}`;
+      const list = groups.get(groupKey) || [];
+      for (const sample of compact.samples || []) {
+        const seconds = Number(sample[0]);
+        const timestampMs = Number(sample[1]);
+        if (timestampMs < cutoff || !Number.isFinite(seconds)) continue;
+        list.push({ seconds, timestampMs, anomalous: false, event: compact });
+      }
+      groups.set(groupKey, list);
+    }
     for (const event of payload.events || []) {
       if (Number(event.timestamp_ms) < cutoff || event.anomalous) continue;
       const groupKey = `${event.segment_key}|${phase11DayType(event.timestamp_ms, holidays)}|${phase11TimeBin(event.timestamp_ms)}`;
@@ -311,8 +500,9 @@ async function aggregateProfiles(env, now) {
     ));
   }
   for (let index = 0; index < statements.length; index += 50) await env.DB.batch(statements.slice(index, index + 50));
+  await env.DB.prepare("DELETE FROM profiles WHERE generated_at <> ?").bind(now.toISOString()).run();
   if (expired.length) await env.EVENT_BUCKET.delete(expired.slice(0, 1000));
-  return { profiles: statements.length };
+  return { profiles: statements.length, sourceObjects: objects.length };
 }
 
 async function proxyRealtime(request, env, ctx) {
@@ -410,6 +600,23 @@ function tokyoClock(date) {
   const parts = new Intl.DateTimeFormat("en-US", { timeZone: "Asia/Tokyo", hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).formatToParts(date);
   const get = (type) => Number(parts.find((part) => part.type === type)?.value);
   return { hour: get("hour"), minute: get("minute") };
+}
+
+function tokyoDateKey(timestampMs) {
+  const parts = TOKYO_DATE_FORMATTER.formatToParts(new Date(timestampMs));
+  const get = (type) => parts.find((part) => part.type === type)?.value;
+  return `${get("year")}-${get("month")}-${get("day")}`;
+}
+
+function hourlyObjectTokyoDate(key) {
+  const match = /^hourly\/(\d{4})-(\d{2})-(\d{2})\/(\d{2})\.json$/.exec(key);
+  if (!match) return null;
+  const timestampMs = Date.parse(`${match[1]}-${match[2]}-${match[3]}T${match[4]}:00:00Z`);
+  return Number.isFinite(timestampMs) ? tokyoDateKey(timestampMs) : null;
+}
+
+function dailyObjectDate(key) {
+  return /^daily(?:-v2)?\/(\d{4}-\d{2}-\d{2})\.json$/.exec(key)?.[1] || null;
 }
 
 function holidaySet(env) {

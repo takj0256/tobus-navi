@@ -56,7 +56,16 @@ export const REALTIME_PROXY_ENDPOINT = "https://your-worker.workers.dev";
 
 - 毎分：停留所イベント収集、異常判定
 - 毎時：毎分R2オブジェクトを時間バッチへ統合
-- 毎日4時（日本時間）：直近28日の時間バッチから週間プロファイルを再生成
+- 毎分：完了済みの東京日付があれば、1日ずつ軽量な日次サンプルへ圧縮
+- 毎日4時（日本時間）：直近28日の日次サンプルから週間プロファイルを再生成
+- 集計が26時間以上更新されていない場合：日次圧縮完了後に自動再集計
+
+集計状態は次のコマンドで確認できます。`status=complete`かつ`error`が空なら正常です。
+
+```bash
+npx wrangler d1 execute tobus-phase11 --remote \
+  --command="SELECT * FROM job_status WHERE job_name='profile-aggregation'"
+```
 
 交通APIは異常確定後または300秒以上の重大異常時だけ呼びます。同一区間は10分キャッシュし、月間設定値の80%以降は重大異常のみ、95%以降は照会を停止します。
 

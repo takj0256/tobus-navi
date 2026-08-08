@@ -61,6 +61,14 @@ test("120秒超過を候補、300秒超過を重大異常にする", () => {
   assert.equal(critical.critical, true);
 });
 
+test("MAD境界だけの小さな差は異常候補にしない", () => {
+  const mild = detectPhase11Anomaly(102, 93, { p75_seconds: 95, mad_seconds: 2 });
+  assert.equal(mild.candidate, false);
+  const delayed = detectPhase11Anomaly(160, 100, { p75_seconds: 120, mad_seconds: 10 });
+  assert.equal(delayed.candidate, true);
+  assert.ok(delayed.reasons.includes("dispersion"));
+});
+
 test("異常確定は既存キャッシュまたは複数車両を使い新規照会を要求しない", () => {
   const candidate = { candidate: true, critical: false };
   const nowMs = Date.now();

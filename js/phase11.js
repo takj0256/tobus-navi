@@ -1,4 +1,9 @@
 const TOKYO_TIME_ZONE = "Asia/Tokyo";
+const TOKYO_PARTS_FORMATTER = new Intl.DateTimeFormat("en-US", {
+  timeZone: TOKYO_TIME_ZONE,
+  year: "numeric", month: "2-digit", day: "2-digit",
+  hour: "2-digit", minute: "2-digit", hourCycle: "h23", weekday: "short",
+});
 
 export function phase11SegmentKey(routeId, directionId, fromStopId, toStopId) {
   return `${routeId || "route"}|${directionId ?? ""}|${fromStopId || "?"}>${toStopId || "?"}`;
@@ -80,10 +85,13 @@ export function detectPhase11Anomaly(actualSeconds, expectedSeconds, profile, op
   const delaySeconds = actual - expected;
   const ratio = actual / expected;
   const madBoundary = Number(profile?.p75_seconds) + 2 * Number(profile?.mad_seconds);
+  const dispersionExceeded = Number.isFinite(madBoundary) && actual > madBoundary
+    && (delaySeconds >= Number(options.dispersionDelaySeconds ?? 60)
+      || ratio >= Number(options.dispersionRatio ?? 1.35));
   const candidate = Number.isFinite(actual) && (
     delaySeconds >= Number(options.delaySeconds ?? 120)
     || ratio >= Number(options.segmentRatio ?? 1.5)
-    || (Number.isFinite(madBoundary) && actual > madBoundary)
+    || dispersionExceeded
   );
   return {
     candidate,
@@ -93,7 +101,7 @@ export function detectPhase11Anomaly(actualSeconds, expectedSeconds, profile, op
     reasons: [
       delaySeconds >= Number(options.delaySeconds ?? 120) ? "delay" : "",
       ratio >= Number(options.segmentRatio ?? 1.5) ? "ratio" : "",
-      Number.isFinite(madBoundary) && actual > madBoundary ? "dispersion" : "",
+      dispersionExceeded ? "dispersion" : "",
     ].filter(Boolean),
   };
 }
@@ -203,11 +211,7 @@ export function propagateDownstreamCorrections(estimates, segments) {
 
 function tokyoParts(timestampMs) {
   const values = {};
-  for (const part of new Intl.DateTimeFormat("en-US", {
-    timeZone: TOKYO_TIME_ZONE,
-    year: "numeric", month: "2-digit", day: "2-digit",
-    hour: "2-digit", minute: "2-digit", hourCycle: "h23", weekday: "short",
-  }).formatToParts(new Date(timestampMs))) {
+  for (const part of TOKYO_PARTS_FORMATTER.formatToParts(new Date(timestampMs))) {
     if (part.type !== "literal") values[part.type] = part.value;
   }
   return {
