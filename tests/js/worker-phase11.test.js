@@ -4,7 +4,10 @@ import {
   collectSegmentEvents,
   buildCompactDailyGroups,
   chunkUniqueKeys,
+  classifyTemperature,
+  classifyWeather,
   compactOneCompletedTokyoDay,
+  fetchCurrentWeather,
   isSameVehicleConsecutive,
 } from "../../worker/worker.js";
 
@@ -52,6 +55,33 @@ test("D1検索キーは重複を除いてSQL変数上限以下へ分割する", 
   assert.equal(new Set(chunks.flat()).size, 160);
 });
 
+test("降水・降雪と気温を学習用カテゴリへ分類する", () => {
+  assert.equal(classifyWeather({ precipitation_mm: 0, weather_code: 1 }), "dry");
+  assert.equal(classifyWeather({ precipitation_mm: 1, weather_code: 61 }), "rain");
+  assert.equal(classifyWeather({ precipitation_mm: 6, weather_code: 65 }), "heavy-rain");
+  assert.equal(classifyWeather({ snowfall_cm: 0.2, weather_code: 71 }), "snow");
+  assert.equal(classifyTemperature(3), "cold");
+  assert.equal(classifyTemperature(32), "hot");
+});
+
+test("Open-Meteo現在値を正規化する", async () => {
+  const now = new Date("2026-08-11T03:00:00Z");
+  const weather = await fetchCurrentWeather({}, now, async (url) => {
+    assert.match(url, /api\.open-meteo\.com/);
+    return new Response(JSON.stringify({
+      latitude: 35.7, longitude: 139.7,
+      current: {
+        time: "2026-08-11T03:00", temperature_2m: 31,
+        apparent_temperature: 35, precipitation: 1.2, rain: 1.2,
+        showers: 0, snowfall: 0, weather_code: 61, wind_speed_10m: 12,
+      },
+    }), { status: 200, headers: { "Content-Type": "application/json" } });
+  });
+  assert.equal(weather.weather_class, "rain");
+  assert.equal(weather.temperature_band, "hot");
+  assert.equal(weather.temperature_c, 31);
+});
+
 test("完了した東京日付を1日ずつ日次R2オブジェクトへ圧縮する", async () => {
   const bucket = memoryBucket(new Map([
     ["hourly/2026-08-07/14.json", { events: [{ id: "d7" }] }], // 8/7 23:00 JST
@@ -75,7 +105,9 @@ test("日次イベントを区間・曜日・15分枠ごとの軽量サンプル
     from_stop_id: "a", to_stop_id: "b", timestamp_ms: at,
   };
   const groups = buildCompactDailyGroups([
-    { ...common, seconds: 100, anomalous: false },
+    { ...common, seconds: 100, anomalous: false, weather: {
+      weather_class: "rain", temperature_band: "hot", temperature_c: 31,
+    } },
     { ...common, seconds: 120, timestamp_ms: at + 60_000, anomalous: false },
     { ...common, seconds: 900, anomalous: true },
   ]);
@@ -83,6 +115,7 @@ test("日次イベントを区間・曜日・15分枠ごとの軽量サンプル
   assert.equal(groups[0].day_type, "saturday");
   assert.equal(groups[0].time_bin, "08:00");
   assert.deepEqual(groups[0].samples.map((sample) => sample[0]), [100, 120]);
+  assert.deepEqual(groups[0].samples[0].slice(2), ["rain", "hot", 31]);
 });
 
 function memoryBucket(initial) {

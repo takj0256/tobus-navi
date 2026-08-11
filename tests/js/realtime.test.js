@@ -253,6 +253,20 @@ test("区間履歴を期限付きで保存・復元する", () => {
   assert.equal(estimate.sampleCount, 1);
 });
 
+test("十分に学習した天候倍率を週間プロファイルへ重ねる", () => {
+  const nowMs = Date.parse("2026-08-11T03:00:00Z");
+  const estimates = new Map([["r1|0|p>n", {
+    profile: { median_seconds: 100, confidence: 0.8, sample_count: 20 },
+    weather: { active: true, adjustment_ratio: 1.2, sample_count: 40, confidence: 0.8 },
+  }]]);
+  const estimate = estimateSegmentTravelTime(new Map(), "r1", "p", "n", 100, nowMs, {
+    directionId: 0, phase11Estimates: estimates,
+  });
+  assert.equal(estimate.seconds, 120);
+  assert.equal(estimate.label, "天候補正");
+  assert.equal(estimate.source, "weather-profile");
+});
+
 test("到着予測は単一値ではなく誤差範囲を表示できる", () => {
   const nowMs = Date.parse("2026-07-19T09:00:00+09:00");
   assert.equal(formatEtaRange(nowMs + 20_000, nowMs + 40_000, nowMs), "まもなく");

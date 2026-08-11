@@ -3,10 +3,12 @@ import assert from "node:assert/strict";
 import {
   applyWeeklyProfile,
   buildCorrectionRatio,
+  buildWeatherAdjustmentProfile,
   buildWeeklyProfile,
   confirmPhase11Anomaly,
   detectPhase11Anomaly,
   effectiveCorrectionRatio,
+  effectiveWeatherRatio,
   fetchPhase11Estimates,
   phase11DayType,
   phase11SegmentKey,
@@ -89,6 +91,20 @@ test("補正は後続2区間まで減衰し3区間目で完全に切れる", () 
   assert.ok(Math.abs(effectiveCorrectionRatio(1.6, 0, 2) - 1.2) < 1e-9);
   assert.equal(effectiveCorrectionRatio(1.6, 0, 3), 1);
   assert.ok(buildCorrectionRatio({ traffic_ratio: 1.5, confidence: 1 }, 1.2) > 1.2);
+});
+
+test("天候倍率は十分なサンプルと信頼度がある場合だけ遅延方向へ適用する", () => {
+  const now = Date.parse("2026-08-11T00:00:00Z");
+  const samples = Array.from({ length: 40 }, (_, index) => ({
+    ratio: 1.2 + (index % 3 - 1) * 0.02,
+    timestampMs: now - index * 60_000,
+  }));
+  const profile = buildWeatherAdjustmentProfile(samples, now, { minimumSamples: 20, targetSamples: 40 });
+  assert.ok(profile.adjustment_ratio > 1.15);
+  assert.ok(profile.confidence > 0.9);
+  assert.equal(effectiveWeatherRatio({ ...profile, active: true }), profile.adjustment_ratio);
+  assert.equal(effectiveWeatherRatio({ ...profile, active: true, sample_count: 19 }), 1);
+  assert.equal(effectiveWeatherRatio({ ...profile, active: true, confidence: 0.59 }), 1);
 });
 
 test("有効補正を同じ経路の後続2区間だけへ伝播する", () => {

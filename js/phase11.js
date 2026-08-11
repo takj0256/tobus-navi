@@ -156,6 +156,45 @@ export function effectiveCorrectionRatio(correctionRatio, elapsedMinutes, downst
   return 1 + (clamp(Number(correctionRatio) || 1, 0.7, 3) - 1) * timeDecay * distanceDecay;
 }
 
+export function buildWeatherAdjustmentProfile(samples, nowMs = Date.now(), options = {}) {
+  const minimumSamples = Math.max(3, Number(options.minimumSamples ?? 20));
+  const targetSamples = Math.max(minimumSamples, Number(options.targetSamples ?? 80));
+  const maximumAgeMs = Math.max(86_400_000, Number(options.maximumAgeMs ?? 28 * 86_400_000));
+  const values = (samples || []).filter((sample) => (
+    Number.isFinite(Number(sample.ratio))
+    && Number(sample.ratio) >= 0.5
+    && Number(sample.ratio) <= 3
+    && Number(sample.timestampMs) >= nowMs - maximumAgeMs
+  ));
+  if (values.length < minimumSamples) return null;
+  const ratios = values.map((sample) => Number(sample.ratio)).sort((a, b) => a - b);
+  const medianRatio = percentile(ratios, 0.5);
+  const p25Ratio = percentile(ratios, 0.25);
+  const p75Ratio = percentile(ratios, 0.75);
+  const recentCount = values.filter((sample) => Number(sample.timestampMs) >= nowMs - 7 * 86_400_000).length;
+  const sampleScore = Math.min(1, values.length / targetSamples);
+  const spreadScore = clamp(1 - (p75Ratio - p25Ratio) / Math.max(0.1, medianRatio), 0, 1);
+  const freshnessScore = recentCount / values.length;
+  const confidence = clamp(0.6 * sampleScore + 0.3 * spreadScore + 0.1 * freshnessScore, 0, 1);
+  const learnedSlowdown = clamp(Math.max(1, medianRatio), 1, 1.5);
+  return {
+    median_ratio: medianRatio,
+    p25_ratio: p25Ratio,
+    p75_ratio: p75Ratio,
+    adjustment_ratio: 1 + (learnedSlowdown - 1) * confidence,
+    sample_count: values.length,
+    confidence,
+    generated_at: new Date(nowMs).toISOString(),
+  };
+}
+
+export function effectiveWeatherRatio(weather) {
+  if (!weather || weather.active === false
+    || Number(weather.sample_count) < 20
+    || Number(weather.confidence) < 0.6) return 1;
+  return clamp(Number(weather.adjustment_ratio) || 1, 1, 1.35);
+}
+
 export async function fetchPhase11Estimates(endpoint, segments, options = {}) {
   if (!endpoint || !Array.isArray(segments) || !segments.length) return new Map();
   const fetchImpl = options.fetchImpl || fetch;

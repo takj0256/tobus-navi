@@ -1,6 +1,7 @@
 import { decodeGtfsRealtime } from "../js/realtime.js";
 import {
   buildCorrectionRatio,
+  buildWeatherAdjustmentProfile,
   buildWeeklyProfile,
   confirmPhase11Anomaly,
   detectPhase11Anomaly,
@@ -10,6 +11,7 @@ import {
 } from "../js/phase11.js";
 
 const SOURCE = "https://api-public.odpt.org/api/v4/gtfs/realtime/ToeiBus";
+const WEATHER_SOURCE = "https://api.open-meteo.com/v1/forecast";
 const UPSTREAM_TIMEOUT_MS = 8_000;
 const STALE_CACHE_SECONDS = 90;
 const EVENT_RETENTION_DAYS = 28;
@@ -20,6 +22,7 @@ const ANOMALY_MINIMUM_CONFIDENCE = 0.65;
 const TOKYO_DATE_FORMATTER = new Intl.DateTimeFormat("en-CA", {
   timeZone: "Asia/Tokyo", year: "numeric", month: "2-digit", day: "2-digit",
 });
+const WEATHER_MAXIMUM_AGE_MS = 2 * 60 * 60_000;
 
 export default {
   async fetch(request, env, ctx) {
@@ -55,6 +58,15 @@ export async function runScheduledCollection(env, now = new Date(), fetchImpl = 
   if (!response.ok) throw new Error(`ODPT upstream HTTP ${response.status}`);
   const feed = decodeGtfsRealtime(await response.arrayBuffer());
   const state = await readJsonObject(env.EVENT_BUCKET, STATE_KEY, { vehicles: {}, candidates: [] });
+  if (weatherRefreshDue(state, env, now)) {
+    state.weather_attempted_at = now.toISOString();
+    try {
+      state.weather = await fetchCurrentWeather(env, now, fetchImpl);
+      if (env.DB) await storeCurrentWeather(env.DB, state.weather);
+    } catch (error) {
+      state.weather_error = String(error?.message || error).slice(0, 180);
+    }
+  }
   const events = collectSegmentEvents(feed, state, now.getTime());
 
   if (events.length) {
@@ -73,7 +85,7 @@ export async function runScheduledCollection(env, now = new Date(), fetchImpl = 
     : await compactOneCompletedTokyoDay(env.EVENT_BUCKET, now, holidays);
   const tokyo = tokyoClock(now);
   if (env.DB) {
-    const aggregationDue = (tokyo.hour === 4 && tokyo.minute < 2)
+    const aggregationDue = (tokyo.hour === 4 && tokyo.minute === 0)
       || await profileAggregationIsStale(env.DB, now);
     if (aggregationDue
       && legacyUpgrade.remainingLegacyDays === 0
@@ -126,6 +138,7 @@ export function collectSegmentEvents(feed, state, nowMs = Date.now()) {
       latitude: midpoint(previous.latitude, current.latitude),
       longitude: midpoint(previous.longitude, current.longitude),
       anomalous: false,
+      weather: weatherForEvent(state.weather, current.timestampMs),
     });
   }
   for (const [vehicleId, value] of Object.entries(state.vehicles)) {
@@ -188,6 +201,108 @@ export function isSameVehicleConsecutive(candidate, event) {
     && candidate?.toStopId === event?.from_stop_id;
 }
 
+function weatherRefreshDue(state, env, now) {
+  if (String(env.WEATHER_ENABLED ?? "true").toLowerCase() === "false") return false;
+  const intervalMs = Math.max(15, Number(env.WEATHER_REFRESH_MINUTES || 15)) * 60_000;
+  const fetchedAt = Date.parse(state?.weather?.fetched_at || "");
+  const attemptedAt = Date.parse(state?.weather_attempted_at || "");
+  const latest = Math.max(Number.isFinite(fetchedAt) ? fetchedAt : 0, Number.isFinite(attemptedAt) ? attemptedAt : 0);
+  return !latest || now.getTime() - latest >= intervalMs;
+}
+
+export async function fetchCurrentWeather(env, now = new Date(), fetchImpl = fetch) {
+  const url = new URL(WEATHER_SOURCE);
+  url.searchParams.set("latitude", String(env.WEATHER_LATITUDE || "35.6895"));
+  url.searchParams.set("longitude", String(env.WEATHER_LONGITUDE || "139.6917"));
+  url.searchParams.set("current", [
+    "temperature_2m", "apparent_temperature", "precipitation", "rain", "showers",
+    "snowfall", "weather_code", "wind_speed_10m",
+  ].join(","));
+  url.searchParams.set("timezone", "UTC");
+  url.searchParams.set("forecast_days", "1");
+  const response = await fetchWithTimeout(url.toString(), Number(env.WEATHER_TIMEOUT_MS || 5000), fetchImpl);
+  if (!response.ok) throw new Error(`Open-Meteo HTTP ${response.status}`);
+  const body = await response.json();
+  const current = body.current || {};
+  const temperature = Number(current.temperature_2m);
+  if (!Number.isFinite(temperature)) throw new Error("Open-Meteo temperature missing");
+  const snapshot = {
+    provider: "open-meteo",
+    fetched_at: now.toISOString(),
+    source_time: String(current.time || now.toISOString()),
+    latitude: Number(body.latitude),
+    longitude: Number(body.longitude),
+    temperature_c: temperature,
+    apparent_temperature_c: finiteOrNull(current.apparent_temperature),
+    precipitation_mm: finiteOrZero(current.precipitation),
+    rain_mm: finiteOrZero(current.rain),
+    showers_mm: finiteOrZero(current.showers),
+    snowfall_cm: finiteOrZero(current.snowfall),
+    weather_code: Number(current.weather_code) || 0,
+    wind_speed_kmh: finiteOrNull(current.wind_speed_10m),
+  };
+  snapshot.weather_class = classifyWeather(snapshot);
+  snapshot.temperature_band = classifyTemperature(temperature);
+  return snapshot;
+}
+
+export function classifyWeather(weather) {
+  const code = Number(weather?.weather_code) || 0;
+  const precipitation = Number(weather?.precipitation_mm) || 0;
+  const snowfall = Number(weather?.snowfall_cm) || 0;
+  if (snowfall > 0 || (code >= 71 && code <= 77) || code === 85 || code === 86) return "snow";
+  if (precipitation >= 5 || [65, 67, 82].includes(code)) return "heavy-rain";
+  if (precipitation >= 0.1 || (code >= 51 && code <= 67)
+    || (code >= 80 && code <= 82) || code >= 95) return "rain";
+  return "dry";
+}
+
+export function classifyTemperature(temperatureC) {
+  const value = Number(temperatureC);
+  if (!Number.isFinite(value)) return "unknown";
+  if (value < 5) return "cold";
+  if (value < 15) return "cool";
+  if (value < 25) return "mild";
+  if (value < 30) return "warm";
+  return "hot";
+}
+
+function weatherForEvent(weather, timestampMs) {
+  const fetchedAt = Date.parse(weather?.fetched_at || "");
+  if (!Number.isFinite(fetchedAt) || Math.abs(Number(timestampMs) - fetchedAt) > WEATHER_MAXIMUM_AGE_MS) return null;
+  return {
+    weather_class: weather.weather_class,
+    temperature_band: weather.temperature_band,
+    temperature_c: weather.temperature_c,
+    precipitation_mm: weather.precipitation_mm,
+    weather_code: weather.weather_code,
+  };
+}
+
+async function storeCurrentWeather(db, weather) {
+  await db.prepare(`INSERT INTO weather_current
+    (id, provider, observed_at, weather_class, temperature_band, temperature_c,
+     apparent_temperature_c, precipitation_mm, snowfall_cm, weather_code, wind_speed_kmh)
+    VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET provider=excluded.provider, observed_at=excluded.observed_at,
+    weather_class=excluded.weather_class, temperature_band=excluded.temperature_band,
+    temperature_c=excluded.temperature_c, apparent_temperature_c=excluded.apparent_temperature_c,
+    precipitation_mm=excluded.precipitation_mm, snowfall_cm=excluded.snowfall_cm,
+    weather_code=excluded.weather_code, wind_speed_kmh=excluded.wind_speed_kmh`).bind(
+    weather.provider, weather.fetched_at, weather.weather_class, weather.temperature_band,
+    weather.temperature_c, weather.apparent_temperature_c, weather.precipitation_mm,
+    weather.snowfall_cm, weather.weather_code, weather.wind_speed_kmh,
+  ).run();
+}
+
+function finiteOrNull(value) {
+  return Number.isFinite(Number(value)) ? Number(value) : null;
+}
+
+function finiteOrZero(value) {
+  return Number.isFinite(Number(value)) ? Number(value) : 0;
+}
+
 async function queryAndStoreTraffic(event, anomaly, env, now, fetchImpl) {
   if (!env.TOMTOM_API_KEY || !Number.isFinite(event.latitude) || !Number.isFinite(event.longitude)) return null;
   if (!(await trafficQuotaAvailable(env.DB, env, now, anomaly.critical))) return null;
@@ -239,11 +354,13 @@ async function handleEstimateBatch(request, env) {
   const keys = [...new Set(segments.map((item) => item.segment_key).filter(Boolean))];
   const profiles = await readProfilesForSegments(env.DB, keys, atMs, holidaySet(env));
   const corrections = await readCorrectionsForSegments(env.DB, keys, atMs);
+  const weatherProfiles = await readWeatherProfilesForSegments(env.DB, segments, atMs);
   const estimates = segments.map((segment) => ({
     segment_key: segment.segment_key,
     profile: profiles.get(segment.segment_key) || null,
     correction: corrections.get(segment.segment_key) || { active: false },
-  })).filter((item) => item.profile || item.correction.active);
+    weather: weatherProfiles.get(segment.segment_key) || { active: false },
+  })).filter((item) => item.profile || item.correction.active || item.weather.active);
   return jsonResponse({ generated_at: new Date(atMs).toISOString(), estimates }, 200, env);
 }
 
@@ -284,6 +401,43 @@ async function readCorrectionsForSegments(db, keys, atMs) {
     const rows = await db.prepare(`SELECT * FROM corrections WHERE segment_key IN (${placeholders}) AND expires_at > ?`)
       .bind(...chunk, new Date(atMs).toISOString()).all();
     for (const row of rows.results || []) result.set(row.segment_key, { ...row, active: true });
+  }
+  return result;
+}
+
+async function readWeatherProfilesForSegments(db, segments, atMs) {
+  const result = new Map();
+  if (!db || !segments.length) return result;
+  const current = await db.prepare("SELECT * FROM weather_current WHERE id = 1").first();
+  const observedAt = Date.parse(current?.observed_at || "");
+  if (!Number.isFinite(observedAt) || Math.abs(atMs - observedAt) > WEATHER_MAXIMUM_AGE_MS) return result;
+  const routes = [...new Set(segments.map((segment) => String(segment.route_id || "")).filter(Boolean))];
+  const profiles = new Map();
+  for (const chunk of chunkUniqueKeys(routes, 70)) {
+    const placeholders = chunk.map(() => "?").join(",");
+    const rows = await db.prepare(`SELECT * FROM weather_profiles
+      WHERE weather_class = ? AND temperature_band = ?
+      AND (route_id = '*' OR route_id IN (${placeholders}))`).bind(
+      current.weather_class, current.temperature_band, ...chunk,
+    ).all();
+    for (const row of rows.results || []) {
+      profiles.set(`${row.route_id}|${row.direction_id}`, row);
+    }
+  }
+  const global = profiles.get("*|");
+  for (const segment of segments) {
+    const routeProfile = profiles.get(`${String(segment.route_id || "")}|${String(segment.direction_id ?? "")}`);
+    const profile = routeProfile || global;
+    if (!profile) continue;
+    result.set(segment.segment_key, {
+      ...profile,
+      active: true,
+      fallback_scope: routeProfile ? null : "global",
+      current_temperature_c: current.temperature_c,
+      current_precipitation_mm: current.precipitation_mm,
+      current_weather_code: current.weather_code,
+      observed_at: current.observed_at,
+    });
   }
   return result;
 }
@@ -390,7 +544,12 @@ export function buildCompactDailyGroups(events, holidays = new Set()) {
       };
       groups.set(key, group);
     }
-    group.samples.push([Number(event.seconds), Number(event.timestamp_ms)]);
+    group.samples.push([
+      Number(event.seconds), Number(event.timestamp_ms),
+      event.weather?.weather_class || null,
+      event.weather?.temperature_band || null,
+      finiteOrNull(event.weather?.temperature_c),
+    ]);
   }
   return [...groups.values()];
 }
@@ -464,7 +623,12 @@ export async function aggregateProfiles(env, now) {
         const seconds = Number(sample[0]);
         const timestampMs = Number(sample[1]);
         if (timestampMs < cutoff || !Number.isFinite(seconds)) continue;
-        list.push({ seconds, timestampMs, anomalous: false, event: compact });
+        list.push({
+          seconds, timestampMs, anomalous: false, event: compact,
+          weatherClass: sample[2] || null,
+          temperatureBand: sample[3] || null,
+          temperatureC: finiteOrNull(sample[4]),
+        });
       }
       groups.set(groupKey, list);
     }
@@ -472,11 +636,17 @@ export async function aggregateProfiles(env, now) {
       if (Number(event.timestamp_ms) < cutoff || event.anomalous) continue;
       const groupKey = `${event.segment_key}|${phase11DayType(event.timestamp_ms, holidays)}|${phase11TimeBin(event.timestamp_ms)}`;
       const list = groups.get(groupKey) || [];
-      list.push({ seconds: event.seconds, timestampMs: event.timestamp_ms, anomalous: false, event });
+      list.push({
+        seconds: event.seconds, timestampMs: event.timestamp_ms, anomalous: false, event,
+        weatherClass: event.weather?.weather_class || null,
+        temperatureBand: event.weather?.temperature_band || null,
+        temperatureC: finiteOrNull(event.weather?.temperature_c),
+      });
       groups.set(groupKey, list);
     }
   }
   const statements = [];
+  const baseProfiles = new Map();
   for (const [groupKey, samples] of groups) {
     if (samples.length < 3) continue;
     const event = samples[0].event;
@@ -485,6 +655,7 @@ export async function aggregateProfiles(env, now) {
     const dayType = parts.pop();
     const profile = buildWeeklyProfile(samples, percentileMedian(samples.map((item) => item.seconds)), now.getTime());
     if (!profile) continue;
+    baseProfiles.set(groupKey, { profile, event });
     statements.push(env.DB.prepare(`INSERT INTO profiles
       (segment_key, route_id, direction_id, from_stop_id, to_stop_id, day_type, time_bin,
        profile_seconds, median_seconds, p25_seconds, p75_seconds, mad_seconds, sample_count, confidence, generated_at)
@@ -501,8 +672,65 @@ export async function aggregateProfiles(env, now) {
   }
   for (let index = 0; index < statements.length; index += 50) await env.DB.batch(statements.slice(index, index + 50));
   await env.DB.prepare("DELETE FROM profiles WHERE generated_at <> ?").bind(now.toISOString()).run();
+  const weatherStatements = buildWeatherProfileStatements(env.DB, groups, baseProfiles, now);
+  for (let index = 0; index < weatherStatements.length; index += 50) {
+    await env.DB.batch(weatherStatements.slice(index, index + 50));
+  }
+  await env.DB.prepare("DELETE FROM weather_profiles WHERE generated_at <> ?").bind(now.toISOString()).run();
   if (expired.length) await env.EVENT_BUCKET.delete(expired.slice(0, 1000));
-  return { profiles: statements.length, sourceObjects: objects.length };
+  return { profiles: statements.length, weatherProfiles: weatherStatements.length, sourceObjects: objects.length };
+}
+
+function buildWeatherProfileStatements(db, groups, baseProfiles, now) {
+  const weatherGroups = new Map();
+  const add = (key, metadata, value) => {
+    let group = weatherGroups.get(key);
+    if (!group) {
+      group = { ...metadata, samples: [] };
+      weatherGroups.set(key, group);
+    }
+    group.samples.push(value);
+  };
+  for (const [groupKey, samples] of groups) {
+    const base = baseProfiles.get(groupKey);
+    if (!base || !Number.isFinite(Number(base.profile?.median_seconds))) continue;
+    const event = base.event;
+    for (const sample of samples) {
+      if (!sample.weatherClass || !sample.temperatureBand) continue;
+      const value = { ratio: Number(sample.seconds) / Number(base.profile.median_seconds), timestampMs: sample.timestampMs };
+      const metadata = {
+        route_id: String(event.route_id || ""), direction_id: String(event.direction_id ?? ""),
+        weather_class: sample.weatherClass, temperature_band: sample.temperatureBand,
+      };
+      add(`route|${metadata.route_id}|${metadata.direction_id}|${sample.weatherClass}|${sample.temperatureBand}`,
+        { scope: "route", ...metadata }, value);
+      add(`global|${sample.weatherClass}|${sample.temperatureBand}`,
+        { ...metadata, scope: "global", route_id: "*", direction_id: "" }, value);
+    }
+  }
+  const statements = [];
+  for (const group of weatherGroups.values()) {
+    const global = group.scope === "global";
+    const profile = buildWeatherAdjustmentProfile(group.samples, now.getTime(), {
+      minimumSamples: global ? 100 : 20,
+      targetSamples: global ? 400 : 80,
+    });
+    if (!profile || profile.confidence < 0.6) continue;
+    statements.push(db.prepare(`INSERT INTO weather_profiles
+      (scope, route_id, direction_id, weather_class, temperature_band, adjustment_ratio,
+       median_ratio, p25_ratio, p75_ratio, sample_count, confidence, generated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(scope, route_id, direction_id, weather_class, temperature_band) DO UPDATE SET
+       adjustment_ratio=excluded.adjustment_ratio, median_ratio=excluded.median_ratio,
+       p25_ratio=excluded.p25_ratio, p75_ratio=excluded.p75_ratio,
+       sample_count=excluded.sample_count, confidence=excluded.confidence,
+       generated_at=excluded.generated_at`).bind(
+      group.scope, group.route_id, group.direction_id, group.weather_class, group.temperature_band,
+      profile.adjustment_ratio, profile.median_ratio, profile.p25_ratio, profile.p75_ratio,
+      profile.sample_count, profile.confidence, profile.generated_at,
+    ));
+  }
+  return statements;
 }
 
 async function proxyRealtime(request, env, ctx) {

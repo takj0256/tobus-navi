@@ -2,6 +2,7 @@ import { haversineMeters } from "./geo.js";
 import {
   applyWeeklyProfile,
   effectiveCorrectionRatio,
+  effectiveWeatherRatio,
   phase11SegmentKey,
 } from "./phase11.js";
 import {
@@ -567,13 +568,14 @@ export function estimateSegmentTravelTime(
     ? options.phase11Estimates.get(phase11Key)
     : options?.phase11Estimates?.[phase11Key];
   const weekly = applyWeeklyProfile(scheduled, phase11?.profile || phase11);
+  const weatherRatio = effectiveWeatherRatio(phase11?.weather);
   const correction = phase11?.correction;
   const correctionRatio = correction?.active === false ? 1 : effectiveCorrectionRatio(
     correction?.correction_ratio ?? correction?.traffic_ratio ?? 1,
     Math.max(0, (nowMs - Date.parse(correction?.observed_at || correction?.updated_at || 0)) / 60_000),
     Number(correction?.downstream_segment_count || 0),
   );
-  const phase11Baseline = weekly.seconds * correctionRatio;
+  const phase11Baseline = weekly.seconds * weatherRatio * correctionRatio;
   const recentWindowMs = Math.max(60_000, Number(options?.recentWindowMs ?? 45 * 60_000));
   const maximumAgeMs = Math.max(recentWindowMs, Number(options?.maximumAgeMs ?? 14 * 86_400_000));
   const samples = segmentHistory instanceof Map
@@ -588,14 +590,17 @@ export function estimateSegmentTravelTime(
   const candidates = recent.length >= 2 ? recent : sameTokyoHourSamples(valid, nowMs);
   const selected = (candidates.length ? candidates : valid).slice(-12);
   if (!selected.length) {
-    const phase11Active = weekly.source === "weekly-profile" || Math.abs(correctionRatio - 1) > 0.01;
+    const weatherActive = Math.abs(weatherRatio - 1) > 0.01;
+    const phase11Active = weekly.source === "weekly-profile" || weatherActive || Math.abs(correctionRatio - 1) > 0.01;
     return {
       seconds: phase11Baseline,
       ratio: phase11Baseline / scheduled,
-      label: phase11Active ? (Math.abs(correctionRatio - 1) > 0.01 ? "交通情報補正" : "週間実績") : "時刻表基準",
+      label: phase11Active ? (Math.abs(correctionRatio - 1) > 0.01 ? "交通情報補正"
+        : weatherActive ? "天候補正" : "週間実績") : "時刻表基準",
       sampleCount: Number(phase11?.profile?.sample_count ?? phase11?.sample_count ?? 0),
       phase11Active,
       source: Math.abs(correctionRatio - 1) > 0.01 ? "external-correction"
+        : weatherActive ? "weather-profile"
         : weekly.source === "weekly-profile" ? "weekly-profile" : "schedule",
     };
   }
@@ -610,7 +615,8 @@ export function estimateSegmentTravelTime(
     ratio,
     label: trafficLabel(ratio),
     sampleCount: selected.length,
-    phase11Active: weekly.source === "weekly-profile" || Math.abs(correctionRatio - 1) > 0.01,
+    phase11Active: weekly.source === "weekly-profile"
+      || Math.abs(weatherRatio - 1) > 0.01 || Math.abs(correctionRatio - 1) > 0.01,
     source: "recent-history",
   };
 }
