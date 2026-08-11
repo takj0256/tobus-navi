@@ -14,7 +14,16 @@ body { display: grid; grid-template-rows: auto 1fr; color: var(--text); backgrou
 .map-status { margin: .65rem 0 0; padding: .55rem .65rem; border-radius: 8px; color: #17547d; background: #eaf5fc; font-size: .76rem; line-height: 1.45; }
 .map-status.approximate { color: #7a3c00; background: #fff2df; }
 .map-status.error { color: #8b2424; background: #ffeded; }
+.map-live-status { margin: .45rem 0 0; color: #526878; font-size: .73rem; line-height: 1.4; }
+.map-live-status.error { color: #8b2424; }
 #routeMap { width: 100%; min-height: 420px; height: 100%; }
+.bus-map-marker { display: grid; place-items: center; min-width: 32px; height: 32px; padding: 0 5px; border: 2px solid #fff; border-radius: 18px; color: #153348; background: #ffd43b; box-shadow: 0 2px 7px rgb(24 50 70 / 38%); font: 800 15px/1 system-ui, sans-serif; cursor: pointer; }
+.bus-map-marker.fuel-cell { color: #075785; background: #c7f0ff; }
+.bus-map-marker.ev { color: #245b18; background: #d9f7c9; }
+.bus-map-marker.hybrid { color: #285d29; background: #dff2b8; }
+.bus-popup { min-width: 150px; }
+.bus-popup strong, .bus-popup span { display: block; }
+.bus-popup span { margin-top: .2rem; color: #526878; font-size: .76rem; }
 .maplibregl-popup-content { line-height: 1.45; }
 .maplibregl-ctrl-attrib { font-size: 10px; }
 @media (max-width: 520px) { .map-header { padding-inline: .7rem; } .back-link { padding-inline: .6rem; } }

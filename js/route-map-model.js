@@ -59,6 +59,99 @@ export function describeRoutePattern(routeData, pattern) {
   };
 }
 
+export function tripMatchesRoutePattern(trip, pattern) {
+  const stopIds = (trip?.stop_times || []).map((item) => item[0]).filter(Boolean);
+  if (stopIds.length < 2 || !pattern) return false;
+  return `${trip.shape_id || ""}|${stopIds.join(">")}` === pattern.key;
+}
+
+export function coordinateForVehicleEstimate(routeData, pattern, estimate) {
+  const previousIndex = Number(estimate?.previousIndex);
+  const nextIndex = Number(estimate?.nextIndex);
+  const progress = Math.max(0, Math.min(1, Number(estimate?.segmentProgress) || 0));
+  if (!Number.isInteger(previousIndex) || !Number.isInteger(nextIndex)) return null;
+
+  const previousStop = stopCoordinate(routeData, pattern?.stopIds?.[previousIndex]);
+  const nextStop = stopCoordinate(routeData, pattern?.stopIds?.[nextIndex]);
+  if (!previousStop || !nextStop) return null;
+  if (previousIndex === nextIndex) return previousStop;
+
+  const shape = (routeData?.shapes?.[pattern?.shapeId] || []).filter(validCoordinate);
+  if (shape.length >= 2) {
+    const projectedIndexes = projectPatternStopsToShape(routeData, pattern, shape);
+    const shapeStart = projectedIndexes[previousIndex];
+    const shapeEnd = projectedIndexes[nextIndex];
+    if (Number.isInteger(shapeStart) && Number.isInteger(shapeEnd) && shapeEnd > shapeStart) {
+      return coordinateAlongLine(shape.slice(shapeStart, shapeEnd + 1), progress);
+    }
+  }
+  return interpolateCoordinate(previousStop, nextStop, progress);
+}
+
+function projectPatternStopsToShape(routeData, pattern, shape) {
+  let minimumIndex = 0;
+  return (pattern?.stopIds || []).map((stopId) => {
+    const coordinate = stopCoordinate(routeData, stopId);
+    if (!coordinate) return minimumIndex;
+    let bestIndex = minimumIndex;
+    let bestDistance = Infinity;
+    for (let index = minimumIndex; index < shape.length; index += 1) {
+      const latDifference = Number(shape[index][0]) - coordinate[0];
+      const lonDifference = Number(shape[index][1]) - coordinate[1];
+      const distance = latDifference * latDifference + lonDifference * lonDifference;
+      if (distance < bestDistance) {
+        bestDistance = distance;
+        bestIndex = index;
+      }
+    }
+    minimumIndex = bestIndex;
+    return bestIndex;
+  });
+}
+
+function coordinateAlongLine(line, progress) {
+  const lengths = [];
+  let total = 0;
+  for (let index = 1; index < line.length; index += 1) {
+    const length = approximateDistance(line[index - 1], line[index]);
+    lengths.push(length);
+    total += length;
+  }
+  if (total <= 0) return [Number(line[0][0]), Number(line[0][1])];
+  const target = total * progress;
+  let travelled = 0;
+  for (let index = 1; index < line.length; index += 1) {
+    const length = lengths[index - 1];
+    if (travelled + length >= target) {
+      const localProgress = length > 0 ? (target - travelled) / length : 0;
+      return interpolateCoordinate(line[index - 1], line[index], localProgress);
+    }
+    travelled += length;
+  }
+  const last = line[line.length - 1];
+  return [Number(last[0]), Number(last[1])];
+}
+
+function stopCoordinate(routeData, stopId) {
+  const stop = routeData?.stops?.[stopId];
+  const coordinate = [Number(stop?.lat), Number(stop?.lon)];
+  return validCoordinate(coordinate) ? coordinate : null;
+}
+
+function interpolateCoordinate(from, to, progress) {
+  return [
+    Number(from[0]) + (Number(to[0]) - Number(from[0])) * progress,
+    Number(from[1]) + (Number(to[1]) - Number(from[1])) * progress,
+  ];
+}
+
+function approximateDistance(from, to) {
+  const middleLatitude = ((Number(from[0]) + Number(to[0])) / 2) * Math.PI / 180;
+  const lat = (Number(to[0]) - Number(from[0])) * 111_320;
+  const lon = (Number(to[1]) - Number(from[1])) * 111_320 * Math.cos(middleLatitude);
+  return Math.hypot(lat, lon);
+}
+
 function validCoordinate(value) {
   return Array.isArray(value)
     && Number.isFinite(Number(value[0]))

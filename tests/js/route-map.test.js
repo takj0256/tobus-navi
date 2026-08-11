@@ -2,9 +2,11 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   buildRoutePatterns,
+  coordinateForVehicleEstimate,
   coordinatesForPattern,
   describeRoutePattern,
   isValidRouteFile,
+  tripMatchesRoutePattern,
 } from "../../js/route-map-model.js";
 
 const routeData = {
@@ -53,4 +55,21 @@ test("経路の選択表示に始点・行き先・停留所数を含める", ()
     selectorLabel: "中央駅 → 東口（3停留所）",
     subtitle: "始点：中央駅 ／ 東口方面 ／ 3停留所",
   });
+});
+
+test("表示中の経路と同じ停留所列・shapeの便だけを対応付ける", () => {
+  const east = buildRoutePatterns(routeData, { directionId: "0" })[0];
+  assert.equal(tripMatchesRoutePattern(routeData.trips[0], east), true);
+  assert.equal(tripMatchesRoutePattern(routeData.trips[2], east), false);
+});
+
+test("バスの推定進行率をGTFS shape上の座標へ変換する", () => {
+  const east = buildRoutePatterns(routeData, { directionId: "0" })[0];
+  const coordinate = coordinateForVehicleEstimate(routeData, east, {
+    previousIndex: 0,
+    nextIndex: 1,
+    segmentProgress: 0.5,
+  });
+  assert.ok(Math.abs(coordinate[0] - 35.06) < 0.000001);
+  assert.ok(Math.abs(coordinate[1] - 139.06) < 0.000001);
 });
