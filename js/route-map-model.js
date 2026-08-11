@@ -31,6 +31,66 @@ export function buildRoutePatterns(routeData, { directionId = "", headsign = "" 
   return [...patterns.values()].sort((a, b) => b.tripCount - a.tripCount || b.stopIds.length - a.stopIds.length);
 }
 
+export function buildRoutePatternGroups(patterns) {
+  const groups = new Map();
+  for (const pattern of patterns || []) {
+    const key = `${pattern.directionId}|${pattern.headsign}`;
+    if (!groups.has(key)) groups.set(key, { key, directionId: pattern.directionId, headsign: pattern.headsign, patterns: [] });
+    groups.get(key).patterns.push(pattern);
+  }
+  return [...groups.values()].sort((a, b) => {
+    const aTrips = a.patterns.reduce((sum, pattern) => sum + pattern.tripCount, 0);
+    const bTrips = b.patterns.reduce((sum, pattern) => sum + pattern.tripCount, 0);
+    return bTrips - aTrips;
+  });
+}
+
+export function buildRouteNetwork(routeData, patterns) {
+  const ordered = [...(patterns || [])].sort((a, b) => b.stopIds.length - a.stopIds.length || b.tripCount - a.tripCount);
+  const primary = ordered[0];
+  if (!primary) return null;
+  const primaryResult = coordinatesForPattern(routeData, primary);
+  const lines = [{
+    pattern: primary,
+    role: "primary",
+    color: "#d53838",
+    origin: stopName(routeData, primary.stopIds[0]),
+    mergeStopId: "",
+    coordinates: primaryResult.coordinates,
+    exactShape: primaryResult.exactShape,
+  }];
+  const branchColors = ["#1769aa", "#16845b", "#7a4db3", "#d06a18"];
+  let branchColorIndex = 0;
+  for (const pattern of ordered.slice(1)) {
+    const sharedLength = commonSuffixLength(primary.stopIds, pattern.stopIds);
+    const mergeIndex = sharedLength > 0 ? pattern.stopIds.length - sharedLength : pattern.stopIds.length - 1;
+    // 本線の途中から始まる区間便は新しい線を重ねず、同じ本線として扱う。
+    if (sharedLength === pattern.stopIds.length || mergeIndex <= 0) continue;
+    const mergeStopId = sharedLength > 0 ? pattern.stopIds[mergeIndex] : "";
+    const result = coordinatesUntilStop(routeData, pattern, mergeIndex);
+    if (result.coordinates.length < 2) continue;
+    lines.push({
+      pattern,
+      role: "branch",
+      color: branchColors[branchColorIndex % branchColors.length],
+      origin: stopName(routeData, pattern.stopIds[0]),
+      mergeStopId,
+      coordinates: result.coordinates,
+      exactShape: result.exactShape,
+    });
+    branchColorIndex += 1;
+  }
+  const uniqueStopIds = new Set(ordered.flatMap((pattern) => pattern.stopIds));
+  return {
+    primary,
+    patterns: ordered,
+    lines,
+    destination: primary.headsign || stopName(routeData, primary.stopIds[primary.stopIds.length - 1]),
+    primaryStopCount: primary.stopIds.length,
+    totalStopCount: uniqueStopIds.size,
+  };
+}
+
 export function coordinatesForPattern(routeData, pattern) {
   const shape = routeData?.shapes?.[pattern?.shapeId];
   if (Array.isArray(shape) && shape.length >= 2) {
@@ -107,6 +167,37 @@ function projectPatternStopsToShape(routeData, pattern, shape) {
     minimumIndex = bestIndex;
     return bestIndex;
   });
+}
+
+function coordinatesUntilStop(routeData, pattern, stopIndex) {
+  const shape = (routeData?.shapes?.[pattern?.shapeId] || []).filter(validCoordinate);
+  if (shape.length >= 2) {
+    const projectedIndexes = projectPatternStopsToShape(routeData, pattern, shape);
+    const endIndex = projectedIndexes[stopIndex];
+    if (Number.isInteger(endIndex) && endIndex > 0) {
+      return {
+        coordinates: shape.slice(0, endIndex + 1).map(([lat, lon]) => [Number(lat), Number(lon)]),
+        exactShape: true,
+      };
+    }
+  }
+  return {
+    coordinates: pattern.stopIds.slice(0, stopIndex + 1).map((stopId) => stopCoordinate(routeData, stopId)).filter(Boolean),
+    exactShape: false,
+  };
+}
+
+function commonSuffixLength(left, right) {
+  let length = 0;
+  while (length < left.length && length < right.length) {
+    if (left[left.length - 1 - length] !== right[right.length - 1 - length]) break;
+    length += 1;
+  }
+  return length;
+}
+
+function stopName(routeData, stopId) {
+  return routeData?.stops?.[stopId]?.stop_name || stopId || "不明";
 }
 
 function coordinateAlongLine(line, progress) {

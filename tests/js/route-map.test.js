@@ -2,6 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   buildRoutePatterns,
+  buildRoutePatternGroups,
+  buildRouteNetwork,
   coordinateForVehicleEstimate,
   coordinatesForPattern,
   describeRoutePattern,
@@ -72,4 +74,38 @@ test("バスの推定進行率をGTFS shape上の座標へ変換する", () => {
   });
   assert.ok(Math.abs(coordinate[0] - 35.06) < 0.000001);
   assert.ok(Math.abs(coordinate[1] - 139.06) < 0.000001);
+});
+
+test("同じ方向・行き先の経路を一つの表示グループへまとめる", () => {
+  const patterns = buildRoutePatterns(routeData);
+  const groups = buildRoutePatternGroups(patterns);
+  assert.equal(groups.length, 2);
+  assert.equal(groups.find((group) => group.headsign === "東口").patterns.length, 1);
+});
+
+test("最長経路を赤い本線、合流前だけを青い枝線として構成する", () => {
+  const data = {
+    stops: {
+      h: { stop_name: "晴海埠頭", lat: 35.0, lon: 139.0 },
+      f: { stop_name: "深川車庫前", lat: 35.05, lon: 139.0 },
+      m: { stop_name: "塩浜二丁目", lat: 35.1, lon: 139.1 },
+      s: { stop_name: "猿江一丁目", lat: 35.2, lon: 139.2 },
+      k: { stop_name: "錦糸町駅前", lat: 35.3, lon: 139.3 },
+    },
+    shapes: {
+      main: [[35.0, 139.0], [35.1, 139.1], [35.2, 139.2], [35.3, 139.3]],
+      branch: [[35.05, 139.0], [35.1, 139.1], [35.2, 139.2], [35.3, 139.3]],
+    },
+  };
+  const main = { key: "main|h>m>s>k", shapeId: "main", headsign: "錦糸町駅前", stopIds: ["h", "m", "s", "k"], tripCount: 20 };
+  const branch = { key: "branch|f>m>s>k", shapeId: "branch", headsign: "錦糸町駅前", stopIds: ["f", "m", "s", "k"], tripCount: 10 };
+  const shortTurn = { key: "main|m>s>k", shapeId: "main", headsign: "錦糸町駅前", stopIds: ["m", "s", "k"], tripCount: 2 };
+  const network = buildRouteNetwork(data, [branch, shortTurn, main]);
+  assert.equal(network.primary, main);
+  assert.equal(network.lines.length, 2);
+  assert.equal(network.lines[0].color, "#d53838");
+  assert.equal(network.lines[1].color, "#1769aa");
+  assert.equal(network.lines[1].mergeStopId, "m");
+  assert.deepEqual(network.lines[1].coordinates, [[35.05, 139.0], [35.1, 139.1]]);
+  assert.equal(network.totalStopCount, 5);
 });

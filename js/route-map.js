@@ -1,7 +1,8 @@
 import {
   buildRoutePatterns,
+  buildRoutePatternGroups,
+  buildRouteNetwork,
   coordinateForVehicleEstimate,
-  coordinatesForPattern,
   describeRoutePattern,
   isValidRouteFile,
   tripMatchesRoutePattern,
@@ -29,11 +30,14 @@ const elements = {
   map: document.querySelector("#routeMap"),
   patternWrap: document.querySelector("#patternWrap"),
   patternSelect: document.querySelector("#patternSelect"),
+  legend: document.querySelector("#routeLegend"),
 };
 
 let map;
 let routeData;
 let patterns = [];
+let patternGroups = [];
+let activeNetwork;
 let realtimeFeed;
 let realtimeTimer;
 let realtimeInFlight = false;
@@ -54,6 +58,7 @@ async function start() {
       headsign: params.get("headsign") || "",
     });
     if (!patterns.length) throw new Error("表示できる停留所列がありません。");
+    patternGroups = buildRoutePatternGroups(patterns);
     await initializeMap();
     setupPatternSelector();
     renderPattern(0);
@@ -90,7 +95,11 @@ async function initializeMap() {
     id: "route-line",
     type: "line",
     source: "route-line",
-    paint: { "line-color": "#0a5ea8", "line-width": 6, "line-opacity": .9 },
+    paint: {
+      "line-color": ["get", "color"],
+      "line-width": ["case", ["==", ["get", "role"], "primary"], 6, 5],
+      "line-opacity": .9,
+    },
     layout: { "line-cap": "round", "line-join": "round" },
   });
   map.addSource("route-stops", { type: "geojson", data: emptyFeatureCollection() });
@@ -111,58 +120,84 @@ async function initializeMap() {
 }
 
 function setupPatternSelector() {
-  elements.patternSelect.replaceChildren(...patterns.map((pattern, index) => {
+  elements.patternSelect.replaceChildren(...patternGroups.map((group, index) => {
+    const network = buildRouteNetwork(routeData, group.patterns);
     const option = document.createElement("option");
     option.value = String(index);
-    option.textContent = describeRoutePattern(routeData, pattern).selectorLabel;
+    const origins = network.lines.map((line) => `${line.origin}発`).join("・");
+    option.textContent = `${origins} → ${network.destination}`;
     return option;
   }));
-  elements.patternWrap.hidden = patterns.length < 2;
+  elements.patternWrap.hidden = patternGroups.length < 2;
   elements.patternSelect.addEventListener("change", () => renderPattern(Number(elements.patternSelect.value)));
 }
 
 function renderPattern(index) {
-  const pattern = patterns[index] || patterns[0];
-  const description = describeRoutePattern(routeData, pattern);
-  const { coordinates, exactShape } = coordinatesForPattern(routeData, pattern);
-  if (coordinates.length < 2) return fail("地図に描画できる座標が不足しています。");
+  const group = patternGroups[index] || patternGroups[0];
+  activeNetwork = buildRouteNetwork(routeData, group?.patterns);
+  if (!activeNetwork?.lines.length) return fail("地図に描画できる座標が不足しています。");
   const selectedStopId = params.get("stop_id") || "";
-  const stops = pattern.stopIds.flatMap((stopId, stopIndex) => {
+  const orderedStopIds = [...new Set(activeNetwork.patterns.flatMap((pattern) => pattern.stopIds))];
+  const stops = orderedStopIds.flatMap((stopId) => {
     const stop = routeData.stops?.[stopId];
     if (!stop) return [];
     return [{
       type: "Feature",
       geometry: { type: "Point", coordinates: [Number(stop.lon), Number(stop.lat)] },
       properties: {
-        label: `${stopIndex + 1}. ${stop.stop_name || stopId}`,
+        label: stop.stop_name || stopId,
         platform: stop.platform_code || "",
         selected: stopId === selectedStopId,
       },
     }];
   });
-  const lineCoordinates = coordinates.map(([lat, lon]) => [lon, lat]);
-  map.getSource("route-line").setData({
+  const lineFeatures = activeNetwork.lines.map((line) => ({
     type: "Feature",
-    geometry: { type: "LineString", coordinates: lineCoordinates },
-    properties: {},
-  });
-  map.setPaintProperty("route-line", "line-color", exactShape ? "#0a5ea8" : "#d56b00");
-  map.setPaintProperty("route-line", "line-dasharray", exactShape ? [1, 0] : [2, 1.6]);
+    geometry: { type: "LineString", coordinates: line.coordinates.map(([lat, lon]) => [lon, lat]) },
+    properties: { color: line.color, role: line.role },
+  }));
+  map.getSource("route-line").setData({ type: "FeatureCollection", features: lineFeatures });
   map.getSource("route-stops").setData({ type: "FeatureCollection", features: stops });
-  const bounds = lineCoordinates.reduce(
+  const allCoordinates = lineFeatures.flatMap((feature) => feature.geometry.coordinates);
+  const bounds = allCoordinates.reduce(
     (value, coordinate) => value.extend(coordinate),
-    new maplibregl.LngLatBounds(lineCoordinates[0], lineCoordinates[0]),
+    new maplibregl.LngLatBounds(allCoordinates[0], allCoordinates[0]),
   );
   map.fitBounds(bounds, { padding: 32, maxZoom: 16, duration: 0 });
 
   const routeName = routeData.route?.route_name || "都バス";
+  const origins = activeNetwork.lines.map((line) => `${line.origin}発`);
   elements.title.textContent = `${routeName} 路線マップ`;
-  elements.subtitle.textContent = description.subtitle;
+  elements.subtitle.textContent = origins.length > 1
+    ? `${origins.join("・")} → ${activeNetwork.destination} ／ 主経路${activeNetwork.primaryStopCount}停留所 ／ 全体${activeNetwork.totalStopCount}停留所`
+    : describeRoutePattern(routeData, activeNetwork.primary).subtitle;
+  renderRouteLegend(activeNetwork);
+  const exactShape = activeNetwork.lines.every((line) => line.exactShape);
   elements.status.className = `map-status ${exactShape ? "exact" : "approximate"}`;
   elements.status.textContent = exactShape
-    ? "GTFSの走行経路データを道路地図上に表示しています。"
+    ? (activeNetwork.lines.length > 1
+      ? "赤が主経路、他の色が合流前の枝線です。合流後は主経路の色で表示しています。"
+      : "GTFSの走行経路データを道路地図上に表示しています。")
     : "概略表示：現在のデータには走行経路がないため、停留所間を直線で結んでいます。実際の走行道路とは異なる場合があります。";
   if (realtimeFeed) renderVehicleMarkers();
+}
+
+function renderRouteLegend(network) {
+  elements.legend.replaceChildren(...network.lines.map((line) => {
+    const item = document.createElement("span");
+    item.className = "route-legend-item";
+    const swatch = document.createElement("span");
+    swatch.className = "route-legend-line";
+    swatch.style.setProperty("--line-color", line.color);
+    const label = document.createElement("span");
+    const mergeName = line.mergeStopId ? routeData.stops?.[line.mergeStopId]?.stop_name : "";
+    label.textContent = line.role === "primary"
+      ? `${line.origin}発（主経路）`
+      : `${line.origin}発（${mergeName || "本線"}で合流）`;
+    item.append(swatch, label);
+    return item;
+  }));
+  elements.legend.hidden = network.lines.length < 2;
 }
 
 async function refreshRealtimeVehicles() {
@@ -187,8 +222,7 @@ async function refreshRealtimeVehicles() {
 function renderVehicleMarkers() {
   vehicleMarkers.forEach((marker) => marker.remove());
   vehicleMarkers = [];
-  const pattern = patterns[Number(elements.patternSelect.value) || 0] || patterns[0];
-  if (!pattern || !realtimeFeed) return;
+  if (!activeNetwork || !realtimeFeed) return;
 
   const nowMs = Date.now();
   const trips = new Map((routeData.trips || []).map((trip) => [trip.trip_id, trip]));
@@ -197,7 +231,8 @@ function renderVehicleMarkers() {
     const timestampMs = Number(vehicle.timestamp || realtimeFeed.timestamp || 0) * 1000;
     if (timestampMs && nowMs - timestampMs > REALTIME_VEHICLE_MAX_AGE_MS) continue;
     const trip = trips.get(vehicle.trip?.tripId);
-    if (!trip || !tripMatchesRoutePattern(trip, pattern)) continue;
+    const pattern = activeNetwork.patterns.find((candidate) => tripMatchesRoutePattern(trip, candidate));
+    if (!trip || !pattern) continue;
     const terminalStopId = pattern.stopIds[pattern.stopIds.length - 1];
     const estimate = estimateVehicleProgress(vehicle, trip, routeData, terminalStopId, nowMs);
     const coordinate = coordinateForVehicleEstimate(routeData, pattern, estimate);
