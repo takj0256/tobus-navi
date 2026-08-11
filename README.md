@@ -19,7 +19,7 @@ Phase 10の停留所イベント推定を維持しながら、共有の週間運
 - Workerや外部APIが未設定・停止中でもPhase 10方式を継続
 - 選択した系統をOpenStreetMap上で表示する独立した路線マップを追加
 - GTFS-RTの車両局番から水素FC・EV・既知のハイブリッドを識別表示
-- Service Workerキャッシュを `tobus-navi-v14` へ更新
+- Service Workerキャッシュを `tobus-navi-v15` へ更新
 
 詳細は[`docs/週間交通プロファイル・異常時補正仕様書.md`](docs/週間交通プロファイル・異常時補正仕様書.md)を参照してください。
 

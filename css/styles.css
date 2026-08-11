@@ -728,6 +728,18 @@ footer p { margin-bottom: .35rem; }
   font-size: .76rem;
 }
 .route-filter-chip b { font-size: .79rem; }
+.route-chip-map-link {
+  margin-left: .15rem;
+  padding: .2rem .42rem;
+  border-radius: 999px;
+  color: #fff;
+  background: var(--primary);
+  font-size: .7rem;
+  font-weight: 850;
+  text-decoration: none;
+  white-space: nowrap;
+}
+.route-chip-map-link:hover { background: var(--primary-dark); }
 .combined-departure {
   grid-template-columns: auto 1fr;
   column-gap: .45rem;

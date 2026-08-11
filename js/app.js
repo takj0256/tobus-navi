@@ -403,12 +403,6 @@ function routeSummaryRow(group, platform, route) {
   const routeKey = createRouteKey(route);
   const favorite = isFavorite(platform.stop_id, routeKey);
   const recent = isRecent(platform.stop_id, routeKey);
-  const mapQuery = new URLSearchParams({
-    route_file: route.route_file,
-    direction_id: route.direction_id || "",
-    headsign: route.headsign || "",
-    stop_id: platform.stop_id,
-  });
   return `<div class="route-summary-row ${favorite ? "priority-route" : ""}">
     <button class="route-summary-button" type="button" data-platform-action
       data-group-id="${escapeHtml(group.group_id)}" data-stop-id="${escapeHtml(platform.stop_id)}"
@@ -417,7 +411,7 @@ function routeSummaryRow(group, platform, route) {
       <span class="route-headsign">${escapeHtml(displayHeadsign(route.headsign))}</span>
       ${favorite ? `<span class="route-state">お気に入り</span>` : recent ? `<span class="route-state">最近</span>` : ""}
     </button>
-    <a class="route-map-link" href="./route-map.html?${escapeHtml(mapQuery.toString())}"
+    <a class="route-map-link" href="${escapeHtml(routeMapHref(route, platform.stop_id))}"
       aria-label="${escapeHtml(route.route_name || "系統")} ${escapeHtml(displayHeadsign(route.headsign))}の路線図を地図で見る">地図</a>
     <button class="favorite-button compact-favorite" type="button" data-favorite-action data-group-id="${escapeHtml(group.group_id)}"
       data-stop-id="${escapeHtml(platform.stop_id)}" data-route-key="${escapeHtml(routeKey)}"
@@ -460,7 +454,9 @@ async function openPlatformDetail(groupId, stopId, preferredRouteKey = "") {
   elements.routeDetailTitle.textContent = platformSelection.group.stop_name;
   elements.routeDetailSubtitle.textContent = `${routes.length}系統の接近順・停留所間の推定位置をまとめて表示`;
   elements.platformRouteSummary.innerHTML = routes.map((route) => (
-    `<span class="route-filter-chip"><b>${escapeHtml(route.route_name || "系統")}</b>${escapeHtml(displayHeadsign(route.headsign))}</span>`
+    `<span class="route-filter-chip"><b>${escapeHtml(route.route_name || "系統")}</b>${escapeHtml(displayHeadsign(route.headsign))}
+      <a class="route-chip-map-link" href="${escapeHtml(routeMapHref(route, platformSelection.platform.stop_id))}"
+        aria-label="${escapeHtml(route.route_name || "系統")} ${escapeHtml(displayHeadsign(route.headsign))}の路線図を地図で見る">地図で見る ›</a></span>`
   )).join("");
   elements.routeDetailStatus.textContent = "時刻表データを読み込んでいます…";
   elements.liveBusList.innerHTML = loadingMarkup("複数系統のリアルタイム情報を準備しています");
@@ -920,6 +916,16 @@ function deduplicateRoutes(routes) {
 
 function createRouteKey(route) {
   return [route.route_id || "", route.headsign || "", route.direction_id ?? ""].join("|");
+}
+
+function routeMapHref(route, stopId) {
+  const query = new URLSearchParams({
+    route_file: route.route_file || "",
+    direction_id: route.direction_id || "",
+    headsign: route.headsign || "",
+    stop_id: stopId || "",
+  });
+  return `./route-map.html?${query.toString()}`;
 }
 
 function isFavorite(stopId, routeKey) {
