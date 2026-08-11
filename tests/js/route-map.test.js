@@ -1,9 +1,18 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { buildRoutePatterns, coordinatesForPattern, isValidRouteFile } from "../../js/route-map-model.js";
+import {
+  buildRoutePatterns,
+  coordinatesForPattern,
+  describeRoutePattern,
+  isValidRouteFile,
+} from "../../js/route-map-model.js";
 
 const routeData = {
-  stops: { a: { lat: 35, lon: 139 }, b: { lat: 35.1, lon: 139.1 }, c: { lat: 35.2, lon: 139.2 } },
+  stops: {
+    a: { lat: 35, lon: 139, stop_name: "中央駅" },
+    b: { lat: 35.1, lon: 139.1, stop_name: "市役所前" },
+    c: { lat: 35.2, lon: 139.2, stop_name: "東口" },
+  },
   trips: [
     { direction_id: "0", headsign: "東口", shape_id: "s1", stop_times: [["a"], ["b"], ["c"]] },
     { direction_id: "0", headsign: "東口", shape_id: "s1", stop_times: [["a"], ["b"], ["c"]] },
@@ -32,5 +41,16 @@ test("GTFS shape is preferred and stop coordinates are the fallback", () => {
   const west = buildRoutePatterns(routeData, { directionId: "1" })[0];
   assert.deepEqual(coordinatesForPattern(routeData, west), {
     coordinates: [[35.2, 139.2], [35, 139]], exactShape: false,
+  });
+});
+
+test("経路の選択表示に始点・行き先・停留所数を含める", () => {
+  const east = buildRoutePatterns(routeData, { directionId: "0" })[0];
+  assert.deepEqual(describeRoutePattern(routeData, east), {
+    origin: "中央駅",
+    destination: "東口",
+    stopCount: 3,
+    selectorLabel: "中央駅 → 東口（3停留所）",
+    subtitle: "始点：中央駅 ／ 東口方面 ／ 3停留所",
   });
 });

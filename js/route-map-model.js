@@ -44,6 +44,21 @@ export function coordinatesForPattern(routeData, pattern) {
   return { coordinates, exactShape: false };
 }
 
+export function describeRoutePattern(routeData, pattern) {
+  const stopIds = pattern?.stopIds || [];
+  const firstStop = routeData?.stops?.[stopIds[0]];
+  const lastStop = routeData?.stops?.[stopIds[stopIds.length - 1]];
+  const origin = firstStop?.stop_name || "始点不明";
+  const destination = pattern?.headsign || lastStop?.stop_name || "行き先不明";
+  return {
+    origin,
+    destination,
+    stopCount: stopIds.length,
+    selectorLabel: `${origin} → ${destination}（${stopIds.length}停留所）`,
+    subtitle: `始点：${origin} ／ ${destination}方面 ／ ${stopIds.length}停留所`,
+  };
+}
+
 function validCoordinate(value) {
   return Array.isArray(value)
     && Number.isFinite(Number(value[0]))

@@ -1,4 +1,9 @@
-import { buildRoutePatterns, coordinatesForPattern, isValidRouteFile } from "./route-map-model.js";
+import {
+  buildRoutePatterns,
+  coordinatesForPattern,
+  describeRoutePattern,
+  isValidRouteFile,
+} from "./route-map-model.js";
 
 const params = new URLSearchParams(location.search);
 const elements = {
@@ -88,7 +93,7 @@ function setupPatternSelector() {
   elements.patternSelect.replaceChildren(...patterns.map((pattern, index) => {
     const option = document.createElement("option");
     option.value = String(index);
-    option.textContent = `${pattern.headsign || "行き先不明"}（${pattern.stopIds.length}停留所）`;
+    option.textContent = describeRoutePattern(routeData, pattern).selectorLabel;
     return option;
   }));
   elements.patternWrap.hidden = patterns.length < 2;
@@ -97,6 +102,7 @@ function setupPatternSelector() {
 
 function renderPattern(index) {
   const pattern = patterns[index] || patterns[0];
+  const description = describeRoutePattern(routeData, pattern);
   const { coordinates, exactShape } = coordinatesForPattern(routeData, pattern);
   if (coordinates.length < 2) return fail("地図に描画できる座標が不足しています。");
   const selectedStopId = params.get("stop_id") || "";
@@ -130,7 +136,7 @@ function renderPattern(index) {
 
   const routeName = routeData.route?.route_name || "都バス";
   elements.title.textContent = `${routeName} 路線マップ`;
-  elements.subtitle.textContent = `${pattern.headsign || "行き先不明"}方面・${pattern.stopIds.length}停留所`;
+  elements.subtitle.textContent = description.subtitle;
   elements.status.className = `map-status ${exactShape ? "exact" : "approximate"}`;
   elements.status.textContent = exactShape
     ? "GTFSの走行経路データを道路地図上に表示しています。"
