@@ -15,5 +15,6 @@ body { display: grid; grid-template-rows: auto 1fr; color: var(--text); backgrou
 .map-status.approximate { color: #7a3c00; background: #fff2df; }
 .map-status.error { color: #8b2424; background: #ffeded; }
 #routeMap { width: 100%; min-height: 420px; height: 100%; }
-.leaflet-popup-content { line-height: 1.45; }
+.maplibregl-popup-content { line-height: 1.45; }
+.maplibregl-ctrl-attrib { font-size: 10px; }
 @media (max-width: 520px) { .map-header { padding-inline: .7rem; } .back-link { padding-inline: .6rem; } }

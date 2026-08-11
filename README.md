@@ -19,7 +19,8 @@ Phase 10の停留所イベント推定を維持しながら、共有の週間運
 - Workerや外部APIが未設定・停止中でもPhase 10方式を継続
 - 選択した系統をOpenStreetMap上で表示する独立した路線マップを追加
 - GTFS-RTの車両局番から水素FC・EV・既知のハイブリッドを識別表示
-- Service Workerキャッシュを `tobus-navi-v15` へ更新
+- 路線マップをOpenFreeMap Positronへ変更し、建物・住宅地を省いた道路中心の白地図化
+- Service Workerキャッシュを `tobus-navi-v16` へ更新
 
 詳細は[`docs/週間交通プロファイル・異常時補正仕様書.md`](docs/週間交通プロファイル・異常時補正仕様書.md)を参照してください。
 
@@ -63,10 +64,13 @@ Phase 6以降で生成済みの次のデータをそのまま使用できます�
 GTFS自体を更新する場合：
 
 ```bash
+curl -fL https://api-public.odpt.org/api/v4/files/Toei/data/ToeiBus-GTFS.zip \
+  -o ~/Downloads/ToeiBus-GTFS.zip
 ./tools/update_gtfs.sh ~/Downloads/ToeiBus-GTFS.zip
 ```
 
 ZIPに `shapes.txt` が含まれていれば、変換時に道路沿いの経路座標も系統別データへ取り込み、路線マップで優先表示します。
+現在同梱しているデータでは、全便の99.7%以上が公式shapeに対応しています。shapeがない便だけ停留所間の概略線へフォールバックします。
 
 ## Ubuntuでローカル実行
 
@@ -115,6 +119,8 @@ git push
 データ提供元：東京都交通局・公共交通オープンデータ協議会（CC BY 4.0）
 
 気象データ： [Open-Meteo.com](https://open-meteo.com/)（CC BY 4.0）
+
+地図配信： [OpenFreeMap](https://openfreemap.org/)（MIT、登録・APIキー不要）
 
 地図データ： [OpenStreetMap](https://www.openstreetmap.org/copyright) contributors（ODbL）
 
