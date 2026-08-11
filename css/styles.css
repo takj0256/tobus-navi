@@ -386,11 +386,13 @@ footer p { margin-bottom: .35rem; }
 .live-bus-card:hover { border-color: var(--primary); background: #e5f1fb; }
 .live-bus-top {
   display: flex;
+  flex-wrap: wrap;
   justify-content: space-between;
   align-items: center;
   gap: .6rem;
 }
 .live-status {
+  margin-left: auto;
   padding: .2rem .5rem;
   border-radius: 999px;
   color: var(--primary-dark);
@@ -675,7 +677,7 @@ footer p { margin-bottom: .35rem; }
 }
 .route-summary-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 44px;
+  grid-template-columns: minmax(0, 1fr) 44px 44px;
   gap: .45rem;
   align-items: stretch;
 }
@@ -693,6 +695,20 @@ footer p { margin-bottom: .35rem; }
   text-align: left;
 }
 .route-summary-button:hover { border-color: #9ec7e7; background: #f7fbfe; }
+.route-map-link {
+  min-width: 44px;
+  min-height: 44px;
+  display: grid;
+  place-items: center;
+  border: 1px solid #bfd9ee;
+  border-radius: 11px;
+  color: var(--primary-dark);
+  background: var(--surface-soft);
+  font-size: .72rem;
+  font-weight: 800;
+  text-decoration: none;
+}
+.route-map-link:hover { border-color: var(--primary); background: #e6f2fb; }
 .compact-favorite { min-width: 44px; min-height: 44px; }
 .platform-route-summary {
   display: flex;
@@ -760,6 +776,20 @@ footer p { margin-bottom: .35rem; }
   font-size: .76rem;
 }
 .live-bus-route span { color: var(--text); font-size: .82rem; font-weight: 750; }
+.vehicle-type-badge {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  padding: .13rem .38rem;
+  border-radius: 999px;
+  color: #334a5e;
+  background: #edf1f4;
+  font-size: .66rem;
+  font-weight: 850;
+}
+.vehicle-type-badge.fuel-cell { color: #07578a; background: #dff4ff; }
+.vehicle-type-badge.ev { color: #563a00; background: #fff0a8; }
+.vehicle-type-badge.hybrid { color: #176039; background: #dcf5e5; }
 .approach-map-heading {
   margin-top: 1rem;
   padding-top: .9rem;
@@ -849,6 +879,9 @@ footer p { margin-bottom: .35rem; }
   line-height: 1;
 }
 .approach-bus-marker.selected { outline: 2px solid var(--primary); outline-offset: 1px; }
+.approach-bus-marker.fuel-cell span { color: #086ca5; font-weight: 950; }
+.approach-bus-marker.ev span { color: #8a6100; }
+.approach-bus-marker.hybrid span { color: #197246; }
 .approach-bus-marker small { font-size: .62rem; font-weight: 850; }
 .approach-dot {
   z-index: 1;

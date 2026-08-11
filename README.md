@@ -17,7 +17,9 @@ Phase 10の停留所イベント推定を維持しながら、共有の週間運
 - 天候倍率は十分な件数と信頼度がある場合だけ遅延方向へ適用
 - R2へ生イベントを毎分バッチ保存し、D1には集計済みデータだけを保存
 - Workerや外部APIが未設定・停止中でもPhase 10方式を継続
-- Service Workerキャッシュを `tobus-navi-v13` へ更新
+- 選択した系統をOpenStreetMap上で表示する独立した路線マップを追加
+- GTFS-RTの車両局番から水素FC・EV・既知のハイブリッドを識別表示
+- Service Workerキャッシュを `tobus-navi-v14` へ更新
 
 詳細は[`docs/週間交通プロファイル・異常時補正仕様書.md`](docs/週間交通プロファイル・異常時補正仕様書.md)を参照してください。
 
@@ -53,7 +55,7 @@ Phase 10では公開データの実態に合わせ、次のように修正して
 
 ## データ
 
-Phase 6以降で生成済みの次のデータをそのまま使用できます。Phase 11の適用だけならGTFSの再生成は不要です。
+Phase 6以降で生成済みの次のデータをそのまま使用できます。現在の路線マップは停留所間を結ぶ概略表示です。
 
 - `data/transit-index.json`
 - `data/routes/*.json`
@@ -63,6 +65,8 @@ GTFS自体を更新する場合：
 ```bash
 ./tools/update_gtfs.sh ~/Downloads/ToeiBus-GTFS.zip
 ```
+
+ZIPに `shapes.txt` が含まれていれば、変換時に道路沿いの経路座標も系統別データへ取り込み、路線マップで優先表示します。
 
 ## Ubuntuでローカル実行
 
@@ -111,5 +115,7 @@ git push
 データ提供元：東京都交通局・公共交通オープンデータ協議会（CC BY 4.0）
 
 気象データ： [Open-Meteo.com](https://open-meteo.com/)（CC BY 4.0）
+
+地図データ： [OpenStreetMap](https://www.openstreetmap.org/copyright) contributors（ODbL）
 
 本アプリは東京都交通局の公式アプリではありません。

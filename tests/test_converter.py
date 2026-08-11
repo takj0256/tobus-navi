@@ -90,6 +90,22 @@ class ConverterTest(unittest.TestCase):
         self.assertEqual(36000, route_data["trips"][0]["stop_times"][0][1])
         self.assertIn("svc", route_data["services"]["calendars"])
 
+    def test_optional_shapes_are_sorted_and_included(self):
+        (self.path / "trips.txt").write_text(
+            "route_id,service_id,trip_id,trip_headsign,direction_id,shape_id\n"
+            "r1,svc,t1,終点駅,0,shape-a\n"
+            "r1,svc,t2,試験駅前,1,\n", encoding="utf-8")
+        (self.path / "shapes.txt").write_text(
+            "shape_id,shape_pt_lat,shape_pt_lon,shape_pt_sequence\n"
+            "shape-a,35.00123456,139.00123456,2\n"
+            "shape-a,35.0,139.0,1\n", encoding="utf-8")
+        index, route_files = build_dataset(self.path, None, None, None)
+        route_data = route_files[index["routes"]["r1"]["route_file"]]
+        self.assertEqual(
+            [[35.0, 139.0], [35.001235, 139.001235]],
+            route_data["shapes"]["shape-a"],
+        )
+
     def test_area_filter(self):
         index, _ = build_dataset(self.path, 35.0, 139.0, 0.2)
         groups = index["stop_groups"]

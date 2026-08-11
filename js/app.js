@@ -38,6 +38,7 @@ import {
   serializeSegmentTravelHistory,
 } from "./realtime.js";
 import { fetchPhase11Estimates, phase11SegmentKey } from "./phase11.js";
+import { classifyVehicleType } from "./vehicle-type.js";
 import {
   buildApproachLanes,
   combinedVehicleKey,
@@ -402,6 +403,12 @@ function routeSummaryRow(group, platform, route) {
   const routeKey = createRouteKey(route);
   const favorite = isFavorite(platform.stop_id, routeKey);
   const recent = isRecent(platform.stop_id, routeKey);
+  const mapQuery = new URLSearchParams({
+    route_file: route.route_file,
+    direction_id: route.direction_id || "",
+    headsign: route.headsign || "",
+    stop_id: platform.stop_id,
+  });
   return `<div class="route-summary-row ${favorite ? "priority-route" : ""}">
     <button class="route-summary-button" type="button" data-platform-action
       data-group-id="${escapeHtml(group.group_id)}" data-stop-id="${escapeHtml(platform.stop_id)}"
@@ -410,6 +417,8 @@ function routeSummaryRow(group, platform, route) {
       <span class="route-headsign">${escapeHtml(displayHeadsign(route.headsign))}</span>
       ${favorite ? `<span class="route-state">お気に入り</span>` : recent ? `<span class="route-state">最近</span>` : ""}
     </button>
+    <a class="route-map-link" href="./route-map.html?${escapeHtml(mapQuery.toString())}"
+      aria-label="${escapeHtml(route.route_name || "系統")} ${escapeHtml(displayHeadsign(route.headsign))}の路線図を地図で見る">地図</a>
     <button class="favorite-button compact-favorite" type="button" data-favorite-action data-group-id="${escapeHtml(group.group_id)}"
       data-stop-id="${escapeHtml(platform.stop_id)}" data-route-key="${escapeHtml(routeKey)}"
       aria-label="お気に入り${favorite ? "から解除" : "に追加"}" aria-pressed="${favorite}">★</button>
@@ -679,10 +688,11 @@ function renderRealtime() {
   elements.liveBusList.innerHTML = vehicles.map((item, index) => {
     const vehicleId = item.combinedVehicleId || combinedVehicleKey(item);
     const label = item.vehicle.vehicle?.label || item.vehicle.vehicle?.id || `バス${index + 1}`;
+    const vehicleType = classifyVehicleType(label);
     const staleClass = stale ? "stale" : "";
     return `<button class="live-bus-card combined-live-card ${vehicleId === state.selectedVehicleId ? "selected" : ""} ${staleClass}" type="button" data-vehicle-id="${escapeHtml(vehicleId)}">
       <span class="live-bus-route"><b>${escapeHtml(item.route.route_name || "系統")}</b><span>${escapeHtml(displayHeadsign(item.route.headsign))}</span></span>
-      <span class="live-bus-top"><strong>${escapeHtml(label)}</strong><span class="live-status">${escapeHtml(item.vehicle.hasCurrentStatus ? realtimeStatusLabel(item.vehicle.currentStatus) : "位置推定")}</span></span>
+      <span class="live-bus-top"><strong>${escapeHtml(label)}</strong><span class="vehicle-type-badge ${vehicleType.key}">${escapeHtml(vehicleType.icon)} ${escapeHtml(vehicleType.label)}</span><span class="live-status">${escapeHtml(item.vehicle.hasCurrentStatus ? realtimeStatusLabel(item.vehicle.currentStatus) : "位置推定")}</span></span>
       <span class="live-location">${escapeHtml(item.currentLabel)}</span>
       <span class="live-eta"><b>${escapeHtml(item.etaLabel || (item.minutes === 0 ? "まもなく" : `約${item.minutes}分`))}</b>・${item.stopsAway}停留所前</span>
       <span class="live-correction">${escapeHtml(item.correctionLabel || "時刻表と配信時刻から補正")}</span>
@@ -723,11 +733,13 @@ function renderApproachLanes(vehicles) {
           ${lane.stops.map((stop, index) => {
             const markers = lane.markers.filter((marker) => marker.lane_index === index);
             return `<div class="approach-stop ${stop.is_target ? "target" : ""}">
-              <div class="approach-marker-stack">${markers.map((marker) => `
-                <button class="approach-bus-marker ${marker.vehicle_id === state.selectedVehicleId ? "selected" : ""}" type="button"
-                  data-vehicle-id="${escapeHtml(marker.vehicle_id)}" style="--segment-offset:${Number(marker.segment_offset || 0).toFixed(3)}" aria-label="${escapeHtml(marker.vehicle_label)}、${escapeHtml(marker.eta_label || (marker.minutes === 0 ? "まもなく" : `約${marker.minutes}分`))}">
-                  <span aria-hidden="true">🚌</span><small>${escapeHtml(marker.eta_label || (marker.minutes === 0 ? "まもなく" : `${marker.minutes}分`))}</small>
-                </button>`).join("")}</div>
+              <div class="approach-marker-stack">${markers.map((marker) => {
+                const vehicleType = classifyVehicleType(marker.vehicle_label);
+                return `<button class="approach-bus-marker ${vehicleType.key} ${marker.vehicle_id === state.selectedVehicleId ? "selected" : ""}" type="button"
+                  data-vehicle-id="${escapeHtml(marker.vehicle_id)}" style="--segment-offset:${Number(marker.segment_offset || 0).toFixed(3)}" aria-label="${escapeHtml(marker.vehicle_label)}、${escapeHtml(vehicleType.label)}、${escapeHtml(marker.eta_label || (marker.minutes === 0 ? "まもなく" : `約${marker.minutes}分`))}">
+                  <span aria-hidden="true">${escapeHtml(vehicleType.marker)}</span><small>${escapeHtml(marker.eta_label || (marker.minutes === 0 ? "まもなく" : `${marker.minutes}分`))}</small>
+                </button>`;
+              }).join("")}</div>
               <span class="approach-dot" aria-hidden="true"></span>
               <span class="approach-stop-name">${escapeHtml(stop.stop_name)}</span>
               ${stop.is_target ? `<span class="approach-target-label">乗車停留所</span>` : ""}
@@ -774,8 +786,9 @@ function renderVehicleTracking(vehicles) {
     phase11Estimates: state.phase11Estimates,
   });
   const label = selected.vehicle.vehicle?.label || selected.vehicle.vehicle?.id || "選択したバス";
+  const vehicleType = classifyVehicleType(label);
   elements.vehicleTrackingSection.classList.remove("hidden");
-  elements.vehicleSummary.innerHTML = `<strong>${escapeHtml(selected.route.route_name || "系統")} ${escapeHtml(displayHeadsign(selected.route.headsign))}</strong><span>${escapeHtml(label)}・${escapeHtml(selected.currentLabel || "位置推定中")}</span><small>${escapeHtml(selected.correctionLabel || "配信時刻と停留所間所要時間から補正")}</small>`;
+  elements.vehicleSummary.innerHTML = `<strong>${escapeHtml(selected.route.route_name || "系統")} ${escapeHtml(displayHeadsign(selected.route.headsign))}</strong><span>${escapeHtml(label)}・${escapeHtml(vehicleType.label)}・${escapeHtml(selected.currentLabel || "位置推定中")}</span><small>${escapeHtml(selected.correctionLabel || "配信時刻と停留所間所要時間から補正")}</small>`;
   elements.futureStopsList.innerHTML = future.map((stop) => `
     <li class="progress-item ${stop.isCurrent ? "current" : ""}">
       <span class="progress-marker" aria-hidden="true"></span>

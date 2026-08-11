@@ -1,0 +1,19 @@
+:root { color-scheme: light; --primary: #0a5ea8; --text: #17324a; --muted: #5f7182; }
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body { display: grid; grid-template-rows: auto 1fr; color: var(--text); background: #eef5fa; font-family: system-ui, -apple-system, "Segoe UI", sans-serif; }
+.map-header { padding: max(.8rem, env(safe-area-inset-top)) 1rem .8rem; background: #fff; box-shadow: 0 2px 12px rgb(28 67 97 / 12%); z-index: 1000; }
+.map-nav { display: flex; align-items: center; gap: .8rem; }
+.back-link { flex: none; padding: .55rem .72rem; border: 1px solid #bfd9ee; border-radius: 10px; color: #074d89; background: #eef7fd; font-weight: 750; text-decoration: none; }
+.map-heading { min-width: 0; }
+.map-heading h1 { margin: 0; font-size: clamp(1.05rem, 4vw, 1.45rem); }
+.map-heading p { margin: .18rem 0 0; color: var(--muted); font-size: .82rem; }
+.map-controls { display: flex; align-items: center; gap: .5rem; margin-top: .7rem; }
+.map-controls label { font-size: .78rem; font-weight: 750; }
+.map-controls select { min-width: 0; max-width: 100%; padding: .45rem; border: 1px solid #bfd0dd; border-radius: 8px; background: #fff; }
+.map-status { margin: .65rem 0 0; padding: .55rem .65rem; border-radius: 8px; color: #17547d; background: #eaf5fc; font-size: .76rem; line-height: 1.45; }
+.map-status.approximate { color: #7a3c00; background: #fff2df; }
+.map-status.error { color: #8b2424; background: #ffeded; }
+#routeMap { width: 100%; min-height: 420px; height: 100%; }
+.leaflet-popup-content { line-height: 1.45; }
+@media (max-width: 520px) { .map-header { padding-inline: .7rem; } .back-link { padding-inline: .6rem; } }

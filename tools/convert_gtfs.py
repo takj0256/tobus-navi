@@ -200,6 +200,27 @@ def load_calendars(source: Path) -> tuple[dict[str, dict], dict[str, dict[str, l
     return calendars, normalized
 
 
+def load_shapes(source: Path) -> dict[str, list[list[float]]]:
+    """任意のshapes.txtを読み、shapeごとの道路沿い座標列を返す。"""
+    points: dict[str, list[tuple[int, float, float]]] = defaultdict(list)
+    for row in read_csv(source, "shapes.txt", required=False):
+        shape_id = row.get("shape_id", "")
+        if not shape_id:
+            continue
+        try:
+            lat = float(row.get("shape_pt_lat", ""))
+            lon = float(row.get("shape_pt_lon", ""))
+            sequence = int(row.get("shape_pt_sequence", "0"))
+        except ValueError:
+            continue
+        points[shape_id].append((sequence, lat, lon))
+    return {
+        shape_id: [[round(lat, 6), round(lon, 6)] for _, lat, lon in sorted(values)]
+        for shape_id, values in points.items()
+        if len(values) >= 2
+    }
+
+
 def build_dataset(
     source: Path,
     center_lat: Optional[float],
@@ -334,6 +355,7 @@ def build_dataset(
         values.sort(key=lambda item: item[3])
 
     calendars, exceptions = load_calendars(source)
+    shapes = load_shapes(source)
 
     # parent_station がある場合は親IDを最優先で一つの停留所カードにまとめる。
     # 親IDがない停留所は従来どおり同名＋近接距離でクラスタ化する。
@@ -461,7 +483,7 @@ def build_dataset(
             if values["add"] or values["remove"]
         }
 
-        route_files[route["route_file"]] = {
+        route_payload = {
             "meta": {
                 "schema_version": 5,
                 "generated_at": generated_at,
@@ -484,6 +506,11 @@ def build_dataset(
             },
             "trips": route_trips,
         }
+        used_shape_ids = sorted({trip["shape_id"] for trip in route_trips if trip["shape_id"]})
+        route_shapes = {shape_id: shapes[shape_id] for shape_id in used_shape_ids if shape_id in shapes}
+        if route_shapes:
+            route_payload["shapes"] = route_shapes
+        route_files[route["route_file"]] = route_payload
 
     return index, route_files
 
