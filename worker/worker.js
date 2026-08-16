@@ -48,9 +48,17 @@ export default {
   },
 
   async scheduled(controller, env, ctx) {
-    ctx.waitUntil(runScheduledCollection(env, new Date(controller.scheduledTime || Date.now())));
+    const now = new Date(controller.scheduledTime || Date.now());
+    const task = scheduledTaskForCron(controller.cron);
+    ctx.waitUntil(task === "collection"
+      ? runScheduledCollection(env, now)
+      : runScheduledAggregation(env, now));
   },
 };
+
+export function scheduledTaskForCron(cron) {
+  return cron === "* * * * *" ? "collection" : "aggregation";
+}
 
 export async function runScheduledCollection(env, now = new Date(), fetchImpl = fetch) {
   if (!env.EVENT_BUCKET) return { enabled: false, events: 0 };
@@ -83,17 +91,21 @@ export async function runScheduledCollection(env, now = new Date(), fetchImpl = 
   const dailyCompaction = legacyUpgrade.upgraded
     ? { compacted: false, remainingCompletedDays: 1 }
     : await compactOneCompletedTokyoDay(env.EVENT_BUCKET, now, holidays);
+  return {
+    enabled: true,
+    events: events.length,
+    remainingLegacyDays: legacyUpgrade.remainingLegacyDays,
+    remainingCompletedDays: dailyCompaction.remainingCompletedDays,
+  };
+}
+
+export async function runScheduledAggregation(env, now = new Date()) {
+  if (!env.DB || !env.EVENT_BUCKET) return { enabled: false, aggregated: false };
   const tokyo = tokyoClock(now);
-  if (env.DB) {
-    const aggregationDue = (tokyo.hour === 4 && tokyo.minute === 0)
-      || await profileAggregationIsStale(env.DB, now);
-    if (aggregationDue
-      && legacyUpgrade.remainingLegacyDays === 0
-      && dailyCompaction.remainingCompletedDays === 0) {
-      await runProfileAggregation(env, now);
-    }
-  }
-  return { enabled: true, events: events.length };
+  const due = tokyo.hour === 4 || await profileAggregationIsStale(env.DB, now);
+  if (!due) return { enabled: true, aggregated: false, reason: "profiles-fresh" };
+  const result = await runProfileAggregation(env, now);
+  return { enabled: true, aggregated: true, ...result };
 }
 
 export function collectSegmentEvents(feed, state, nowMs = Date.now()) {
