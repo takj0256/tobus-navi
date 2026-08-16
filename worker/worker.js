@@ -16,7 +16,6 @@ const UPSTREAM_TIMEOUT_MS = 8_000;
 const STALE_CACHE_SECONDS = 90;
 const EVENT_RETENTION_DAYS = 28;
 const STATE_KEY = "state/latest.json";
-const PROFILE_STALE_MS = 26 * 60 * 60_000;
 const ANOMALY_MINIMUM_SAMPLES = 8;
 const ANOMALY_MINIMUM_CONFIDENCE = 0.65;
 const TOKYO_DATE_FORMATTER = new Intl.DateTimeFormat("en-CA", {
@@ -49,16 +48,9 @@ export default {
 
   async scheduled(controller, env, ctx) {
     const now = new Date(controller.scheduledTime || Date.now());
-    const task = scheduledTaskForCron(controller.cron);
-    ctx.waitUntil(task === "collection"
-      ? runScheduledCollection(env, now)
-      : runScheduledAggregation(env, now));
+    ctx.waitUntil(runScheduledCollection(env, now));
   },
 };
-
-export function scheduledTaskForCron(cron) {
-  return cron === "* * * * *" ? "collection" : "aggregation";
-}
 
 export async function runScheduledCollection(env, now = new Date(), fetchImpl = fetch) {
   if (!env.EVENT_BUCKET) return { enabled: false, events: 0 };
@@ -97,15 +89,6 @@ export async function runScheduledCollection(env, now = new Date(), fetchImpl = 
     remainingLegacyDays: legacyUpgrade.remainingLegacyDays,
     remainingCompletedDays: dailyCompaction.remainingCompletedDays,
   };
-}
-
-export async function runScheduledAggregation(env, now = new Date()) {
-  if (!env.DB || !env.EVENT_BUCKET) return { enabled: false, aggregated: false };
-  const tokyo = tokyoClock(now);
-  const due = tokyo.hour === 4 || await profileAggregationIsStale(env.DB, now);
-  if (!due) return { enabled: true, aggregated: false, reason: "profiles-fresh" };
-  const result = await runProfileAggregation(env, now);
-  return { enabled: true, aggregated: true, ...result };
 }
 
 export function collectSegmentEvents(feed, state, nowMs = Date.now()) {
@@ -564,48 +547,6 @@ export function buildCompactDailyGroups(events, holidays = new Set()) {
     ]);
   }
   return [...groups.values()];
-}
-
-async function profileAggregationIsStale(db, now) {
-  const row = await db.prepare("SELECT MAX(generated_at) AS generated_at FROM profiles").first();
-  const generatedAt = Date.parse(row?.generated_at || "");
-  return !Number.isFinite(generatedAt) || now.getTime() - generatedAt >= PROFILE_STALE_MS;
-}
-
-async function runProfileAggregation(env, now) {
-  await writeAggregationStatus(env.DB, {
-    status: "running", started_at: now.toISOString(), completed_at: null,
-    source_objects: 0, profile_count: 0, error: null,
-  });
-  try {
-    const result = await aggregateProfiles(env, now);
-    await writeAggregationStatus(env.DB, {
-      status: "complete", started_at: now.toISOString(), completed_at: new Date().toISOString(),
-      source_objects: result.sourceObjects, profile_count: result.profiles, error: null,
-    });
-    return result;
-  } catch (error) {
-    await writeAggregationStatus(env.DB, {
-      status: "failed", started_at: now.toISOString(), completed_at: new Date().toISOString(),
-      source_objects: 0, profile_count: 0, error: String(error?.message || error).slice(0, 500),
-    });
-    throw error;
-  }
-}
-
-async function writeAggregationStatus(db, value) {
-  try {
-    await db.prepare(`INSERT INTO job_status
-      (job_name, status, started_at, completed_at, source_objects, profile_count, error)
-      VALUES ('profile-aggregation', ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(job_name) DO UPDATE SET status=excluded.status, started_at=excluded.started_at,
-      completed_at=excluded.completed_at, source_objects=excluded.source_objects,
-      profile_count=excluded.profile_count, error=excluded.error`).bind(
-      value.status, value.started_at, value.completed_at, value.source_objects, value.profile_count, value.error,
-    ).run();
-  } catch {
-    // 集計本体を診断テーブルの一時障害で止めない。
-  }
 }
 
 export async function aggregateProfiles(env, now) {

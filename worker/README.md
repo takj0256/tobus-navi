@@ -1,9 +1,9 @@
-# 都バスGTFS-RT中継・Phase 11集計Worker
+# 都バスGTFS-RT中継・Phase 11収集Worker
 
 Android ChromeまたはGitHub PagesからODPT公開配信へ直接アクセスできない場合に使用します。
 上流通信を8秒で打ち切り、成功したフィードを最大90秒間だけ障害時の予備として保持します。
 
-Phase 11を有効化すると、毎分GTFS-RTを取得して停留所区間イベントをR2へバッチ保存し、集計済み週間プロファイル、天候・気温倍率、異常状態、外部交通補正だけをD1へ保存します。R2・D1が未設定でも従来の中継機能は動作します。
+Phase 11を有効化すると、毎分GTFS-RTを取得して停留所区間イベントをR2へバッチ保存します。重い週間統計はWSL上で日次実行し、集計済みプロファイルだけをD1へ保存します。R2・D1が未設定でも従来の中継機能は動作します。
 
 ## Phase 11リソース作成
 
@@ -55,15 +55,35 @@ export const REALTIME_PROXY_ENDPOINT = "https://your-worker.workers.dev";
 ## 定期処理
 
 - 毎分Cron：停留所イベント収集、異常判定、R2日次圧縮
-- 毎時Cron：プロファイルの鮮度を判定し、必要な場合だけ全体を再集計
 - 15分ごと：Open-Meteoから東京中心点の気温・降水・降雪を取得
 - 毎時：毎分R2オブジェクトを時間バッチへ統合
 - 毎分：完了済みの東京日付があれば、1日ずつ軽量な日次サンプルへ圧縮
-- 毎日4時（日本時間）：直近28日の日次サンプルから週間プロファイルを再生成
-- 集計が26時間以上更新されていない場合：次の毎時Cronで自動再集計
 
-重い全体再集計は毎分Cronから分離しています。これにより、短時間間隔のCronへ
-適用されるCPU上限で集計が途中終了し、`status=running`のまま残ることを防ぎます。
+Cloudflare Workers FreeのCPU上限内へ収めるため、直近28日分の中央値、四分位、MAD、
+信頼度、天候倍率の再計算は個人PCへ分離します。WSLで次を1日1回実行してください。
+
+```bash
+cd ~/bityk/bus/tobus-navi-pwa-integrated
+source ~/.nvm/nvm.sh
+nvm use 22
+./tools/run_phase11_local_aggregation.sh
+```
+
+統計計算をTailscale接続したサブPCへ任せる場合は、メインPCで次を実行します。
+Cloudflare認証をサブPCへコピーせず、R2取得とD1反映だけをメインPC、統計計算だけを
+サブPCで行います。
+
+```bash
+./tools/run_phase11_remote_aggregation.sh
+```
+
+PCを常時起動する必要はありません。実行できなかった日はD1の直近結果がそのまま使われ、
+次回の実行時にR2の過去28日分から再計算されます。自動化する場合は、例えば毎日4時15分に
+次をcrontabへ登録します（PCが起動中のときだけ実行されます）。
+
+```cron
+15 4 * * * cd /home/roboko3/bityk/bus/tobus-navi-pwa-integrated && /bin/bash -lc 'source ~/.nvm/nvm.sh && nvm use 22 >/dev/null && ./tools/run_phase11_local_aggregation.sh >> /tmp/tobus-phase11-aggregation.log 2>&1'
+```
 
 集計状態は次のコマンドで確認できます。`status=complete`かつ`error`が空なら正常です。
 

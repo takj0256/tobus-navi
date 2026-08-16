@@ -3,9 +3,8 @@ main = "worker.js"
 compatibility_date = "2026-07-01"
 
 [triggers]
-# 毎分CronはGTFS-RT収集専用。毎時Cronはプロファイル集計判定専用。
-# 1時間間隔のCronへ重い処理を分離し、短時間CronのCPU上限を避ける。
-crons = ["* * * * *", "0 * * * *"]
+# WorkerはGTFS-RT収集だけを担当する。重いプロファイル集計はWSLで行う。
+crons = ["* * * * *"]
 
 [[d1_databases]]
 binding = "DB"

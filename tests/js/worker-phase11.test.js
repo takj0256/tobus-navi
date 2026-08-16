@@ -9,13 +9,7 @@ import {
   compactOneCompletedTokyoDay,
   fetchCurrentWeather,
   isSameVehicleConsecutive,
-  scheduledTaskForCron,
 } from "../../worker/worker.js";
-
-test("毎分収集と毎時集計を別Cronへ振り分ける", () => {
-  assert.equal(scheduledTaskForCron("* * * * *"), "collection");
-  assert.equal(scheduledTaskForCron("0 * * * *"), "aggregation");
-});
 
 function vehicle(stopId, sequence, timestamp, overrides = {}) {
   return {
