@@ -10,12 +10,17 @@ work_dir="$(mktemp -d)"
 trap 'rm -rf "$work_dir"' EXIT
 data_dir="$work_dir/daily-v2"
 mkdir -p "$data_dir"
+if [[ -x "$project_dir/node_modules/.bin/wrangler" ]]; then
+  wrangler=("$project_dir/node_modules/.bin/wrangler")
+else
+  wrangler=(npx wrangler@latest)
+fi
 
 downloaded=0
 for days_ago in $(seq 0 27); do
   date_key="$(TZ=Asia/Tokyo date -d "$days_ago days ago" +%F)"
   target="$data_dir/$date_key.json"
-  if npx wrangler@latest r2 object get "tobus-phase11-events/daily-v2/$date_key.json" \
+  if "${wrangler[@]}" r2 object get "tobus-phase11-events/daily-v2/$date_key.json" \
       --remote --file "$target" --config "$project_dir/worker/wrangler.toml" >/dev/null 2>&1; then
     if [[ -s "$target" ]]; then
       downloaded=$((downloaded + 1))
@@ -47,6 +52,6 @@ rsync -az -e "ssh -i $identity_file -p $compute_port" \
 ssh "${ssh_args[@]}" "$compute_host" \
   "set -eu; . \"\$HOME/.nvm/nvm.sh\"; cd '$remote_dir/app'; node tools/aggregate_phase11_local.mjs ../daily-v2 ../profiles.sql"
 scp -i "$identity_file" -P "$compute_port" "$compute_host:$remote_dir/profiles.sql" "$work_dir/profiles.sql"
-npx wrangler@latest d1 execute tobus-phase11 --remote --file "$work_dir/profiles.sql" \
+"${wrangler[@]}" d1 execute tobus-phase11 --remote --yes --file "$work_dir/profiles.sql" \
   --config "$project_dir/worker/wrangler.toml"
 echo "Phase 11 remote aggregation complete ($downloaded source objects on $compute_host)."
