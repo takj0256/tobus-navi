@@ -97,6 +97,23 @@ npx wrangler d1 execute tobus-phase11 --remote \
   --command="SELECT * FROM job_status WHERE job_name='profile-aggregation'"
 ```
 
+CodexやメインPCが停止中でも5時のメールを送る場合は、サブPCの
+`~/.config/tobus-phase11/mail.env`（権限600）へGmailのアプリパスワードを設定します。
+通常のGoogleパスワードは使用しません。
+
+```dotenv
+PHASE11_GMAIL_USER=your-account@gmail.com
+PHASE11_GMAIL_APP_PASSWORD=Googleで発行した16文字のアプリパスワード
+PHASE11_REPORT_TO=tatatakakaka1009@gmail.com
+```
+
+送信前の確認は `python3 tools/send_phase11_daily_report.py --dry-run`、実送信は
+`python3 tools/send_phase11_daily_report.py` です。毎日5時のCron例は次の通りです。
+
+```cron
+0 5 * * * /usr/bin/flock -n /home/yachiyo/tobus-phase11-batch/report.lock /bin/bash -lc 'source /home/yachiyo/.nvm/nvm.sh && nvm use 22 >/dev/null && source /home/yachiyo/.config/tobus-phase11/mail.env && cd /home/yachiyo/tobus-phase11-batch/app && python3 tools/send_phase11_daily_report.py >> /home/yachiyo/tobus-phase11-batch/report.log 2>&1'
+```
+
 交通APIは異常確定後または300秒以上の重大異常時だけ呼びます。同一区間は10分キャッシュし、月間設定値の80%以降は重大異常のみ、95%以降は照会を停止します。
 
 祝日を休日プロファイルへ分類するには、`wrangler.toml`の`HOLIDAY_DATE_KEYS`へ`YYYY-MM-DD`をカンマ区切りで設定します。日曜日は設定なしでも休日扱いです。
