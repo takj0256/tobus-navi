@@ -56,7 +56,7 @@ export const REALTIME_PROXY_ENDPOINT = "https://your-worker.workers.dev";
 
 - 毎分Cron：停留所イベント収集、異常判定、R2日次圧縮
 - 15分ごと：Open-Meteoから東京中心点の気温・降水・降雪を取得
-- 毎分：完了済みの分イベントを古い時間から回収し、最大4時間ずつ時間バッチへ統合
+- 毎分：完了済みの分イベントを古い時間から回収し、最大8時間ずつ時間バッチへ統合
 - 毎分：完了済みの東京日付があれば、遅れて到着した時間バッチも既存日次データへ追記
 
 Cloudflare Workers FreeのCPU上限内へ収めるため、直近28日分の中央値、四分位、MAD、

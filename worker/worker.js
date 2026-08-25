@@ -92,7 +92,7 @@ export async function runScheduledCollection(env, now = new Date(), fetchImpl = 
   }
 
   // R2保守は収集やD1の一時障害から独立させる。失敗した時間も後続Cronで追いつける。
-  const hourlyCompaction = await compactCompletedHours(env.EVENT_BUCKET, now, 4);
+  const hourlyCompaction = await compactCompletedHours(env.EVENT_BUCKET, now, 8);
   const holidays = holidaySet(env);
   const legacyUpgrade = await upgradeOneLegacyDailyObject(env.EVENT_BUCKET, now, holidays);
   const dailyCompaction = legacyUpgrade.upgraded
