@@ -477,7 +477,10 @@ export async function compactOneCompletedHour(bucket, now) {
 }
 
 async function compactCompletedHours(bucket, now, maximumHours) {
-  const objects = await listAll(bucket, "events/");
+  // R2全件走査はバックログ量に比例してCPUを消費する。キーは時系列順なので、
+  // 先頭ページだけで最古の完了時間を安全に回収できる。
+  const listed = await bucket.list({ prefix: "events/", limit: 500 });
+  const objects = listed.objects;
   const currentPrefix = hourEventPrefix(now);
   const prefixes = [...new Set(objects.map((object) => eventObjectHourPrefix(object.key))
     .filter((prefix) => prefix && prefix < currentPrefix))].sort();
@@ -502,7 +505,7 @@ async function compactCompletedHours(bucket, now, maximumHours) {
     hourlyKey: hourlyKeys.at(-1),
     hourlyKeys,
     sourceObjects: sourceObjectCount,
-    remainingCompletedHours: prefixes.length - selectedPrefixes.length,
+    remainingCompletedHours: prefixes.length - selectedPrefixes.length + (listed.truncated ? 1 : 0),
   };
 }
 
