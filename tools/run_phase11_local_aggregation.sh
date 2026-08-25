@@ -26,6 +26,17 @@ mark_failed() {
 }
 trap mark_failed ERR
 
+# 大きな日次JSONの生成はCloudflare WorkerのCPU上限を避けるため、このPCで行う。
+# 既に昨日分がある場合は何も変更せず、欠損時だけhourly/eventsから復元する。
+yesterday_key="$(TZ=Asia/Tokyo date -d '1 day ago' +%F)"
+probe_file="$work_dir/yesterday.json"
+current_step="ensuring yesterday daily-v2"
+if ! "${wrangler[@]}" r2 object get "tobus-phase11-events/daily-v2/$yesterday_key.json" \
+    --remote --file "$probe_file" --config "$project_dir/worker/wrangler.toml" >/dev/null 2>&1; then
+  rm -f "$probe_file"
+  node "$project_dir/tools/recover_phase11_daily_from_r2.mjs" "$yesterday_key"
+fi
+
 current_step="recording running status"
 "${wrangler[@]}" d1 execute tobus-phase11 --remote --yes \
   --command="INSERT INTO job_status (job_name,status,started_at,completed_at,source_objects,profile_count,error) VALUES ('profile-aggregation','running','$started_at',NULL,0,0,NULL) ON CONFLICT(job_name) DO UPDATE SET status='running',started_at=excluded.started_at,completed_at=NULL,source_objects=0,profile_count=0,error=NULL" \
