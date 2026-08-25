@@ -92,12 +92,17 @@ export async function runScheduledCollection(env, now = new Date(), fetchImpl = 
   }
 
   // R2保守は収集やD1の一時障害から独立させる。失敗した時間も後続Cronで追いつける。
-  const hourlyCompaction = await compactCompletedHours(env.EVENT_BUCKET, now, 6);
-  const holidays = holidaySet(env);
-  const legacyUpgrade = await upgradeOneLegacyDailyObject(env.EVENT_BUCKET, now, holidays);
-  const dailyCompaction = legacyUpgrade.upgraded
-    ? { compacted: false, remainingCompletedDays: 1 }
-    : await compactOneCompletedTokyoDay(env.EVENT_BUCKET, now, holidays);
+  let hourlyCompaction = { compacted: false, remainingCompletedHours: 0 };
+  let legacyUpgrade = { upgraded: false, remainingLegacyDays: 0 };
+  let dailyCompaction = { compacted: false, remainingCompletedDays: 0 };
+  if (String(env.R2_MAINTENANCE_ENABLED || "true").toLowerCase() !== "false") {
+    hourlyCompaction = await compactCompletedHours(env.EVENT_BUCKET, now, 6);
+    const holidays = holidaySet(env);
+    legacyUpgrade = await upgradeOneLegacyDailyObject(env.EVENT_BUCKET, now, holidays);
+    dailyCompaction = legacyUpgrade.upgraded
+      ? { compacted: false, remainingCompletedDays: 1 }
+      : await compactOneCompletedTokyoDay(env.EVENT_BUCKET, now, holidays);
+  }
   if (hourlyCompaction.compacted || legacyUpgrade.upgraded || dailyCompaction.compacted) {
     console.log(JSON.stringify({
       phase11_maintenance: true,
@@ -553,6 +558,12 @@ export function mergeCompactDailyGroups(existingGroups, addedGroups) {
       current.samples.push(...(group.samples || []));
     }
   }
+  for (const group of groups.values()) {
+    group.samples = [...new Map(group.samples.map((sample) => [
+      sample[5] ? `event:${sample[5]}` : `sample:${JSON.stringify(sample)}`,
+      sample,
+    ])).values()];
+  }
   return [...groups.values()];
 }
 
@@ -599,12 +610,14 @@ export function buildCompactDailyGroups(events, holidays = new Set()) {
       };
       groups.set(key, group);
     }
-    group.samples.push([
+    const sample = [
       Number(event.seconds), Number(event.timestamp_ms),
       event.weather?.weather_class || null,
       event.weather?.temperature_band || null,
       finiteOrNull(event.weather?.temperature_c),
-    ]);
+    ];
+    if (event.event_id) sample.push(event.event_id);
+    group.samples.push(sample);
   }
   return [...groups.values()];
 }

@@ -150,6 +150,12 @@ test("日次グループの追記で同一区間と時間枠を統合する", ()
   assert.deepEqual(merged[0].samples, [[1, 1], [2, 2]]);
 });
 
+test("イベントIDが同じ遅延サンプルを日次データへ二重計上しない", () => {
+  const base = { segment_key: "s", day_type: "weekday", time_bin: "08:00", samples: [[100, 1, null, null, null, "e1"]] };
+  const merged = mergeCompactDailyGroups([base], [{ ...base, samples: [[100, 1, null, null, null, "e1"]] }]);
+  assert.equal(merged[0].samples.length, 1);
+});
+
 test("日次イベントを区間・曜日・15分枠ごとの軽量サンプルへ変換する", () => {
   const at = Date.parse("2026-08-07T23:07:00Z"); // 土曜08:07 JST
   const common = {
