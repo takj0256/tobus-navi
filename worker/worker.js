@@ -96,12 +96,16 @@ export async function runScheduledCollection(env, now = new Date(), fetchImpl = 
   let legacyUpgrade = { upgraded: false, remainingLegacyDays: 0 };
   let dailyCompaction = { compacted: false, remainingCompletedDays: 0 };
   if (String(env.R2_MAINTENANCE_ENABLED || "true").toLowerCase() !== "false") {
-    hourlyCompaction = await compactCompletedHours(env.EVENT_BUCKET, now, 6);
-    const holidays = holidaySet(env);
-    legacyUpgrade = await upgradeOneLegacyDailyObject(env.EVENT_BUCKET, now, holidays);
-    dailyCompaction = legacyUpgrade.upgraded
-      ? { compacted: false, remainingCompletedDays: 1 }
-      : await compactOneCompletedTokyoDay(env.EVENT_BUCKET, now, holidays);
+    // 毎分Cronでは1時間分だけ処理し、CPU上限を超える大きな日次統合は
+    // サブPCの04:15バッチへ委譲できるよう独立して停止可能にする。
+    hourlyCompaction = await compactCompletedHours(env.EVENT_BUCKET, now, 1);
+    if (String(env.R2_DAILY_MAINTENANCE_ENABLED || "true").toLowerCase() !== "false") {
+      const holidays = holidaySet(env);
+      legacyUpgrade = await upgradeOneLegacyDailyObject(env.EVENT_BUCKET, now, holidays);
+      dailyCompaction = legacyUpgrade.upgraded
+        ? { compacted: false, remainingCompletedDays: 1 }
+        : await compactOneCompletedTokyoDay(env.EVENT_BUCKET, now, holidays);
+    }
   }
   if (hourlyCompaction.compacted || legacyUpgrade.upgraded || dailyCompaction.compacted) {
     console.log(JSON.stringify({
