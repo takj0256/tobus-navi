@@ -12,12 +12,34 @@ else
   wrangler=(npx wrangler@latest)
 fi
 
+started_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+current_step="initialization"
+mark_failed() {
+  code=$?
+  trap - ERR
+  error_text="failed at $current_step (exit $code)"
+  "${wrangler[@]}" d1 execute tobus-phase11 --remote --yes \
+    --command="INSERT INTO job_status (job_name,status,started_at,completed_at,source_objects,profile_count,error) VALUES ('profile-aggregation','failed','$started_at','$(date -u +%Y-%m-%dT%H:%M:%SZ)',0,0,'$error_text') ON CONFLICT(job_name) DO UPDATE SET status='failed',started_at=excluded.started_at,completed_at=excluded.completed_at,error=excluded.error" \
+    --config "$project_dir/worker/wrangler.toml" >/dev/null 2>&1 || true
+  echo "Phase 11 aggregation $error_text" >&2
+  exit "$code"
+}
+trap mark_failed ERR
+
+current_step="recording running status"
+"${wrangler[@]}" d1 execute tobus-phase11 --remote --yes \
+  --command="INSERT INTO job_status (job_name,status,started_at,completed_at,source_objects,profile_count,error) VALUES ('profile-aggregation','running','$started_at',NULL,0,0,NULL) ON CONFLICT(job_name) DO UPDATE SET status='running',started_at=excluded.started_at,completed_at=NULL,source_objects=0,profile_count=0,error=NULL" \
+  --config "$project_dir/worker/wrangler.toml" >/dev/null
+
 downloaded=0
-for days_ago in $(seq 0 27); do
+has_yesterday=0
+current_step="downloading daily-v2 objects"
+for days_ago in $(seq 1 28); do
   date_key="$(TZ=Asia/Tokyo date -d "$days_ago days ago" +%F)"
   if "${wrangler[@]}" r2 object get "tobus-phase11-events/daily-v2/$date_key.json" \
       --remote --file "$data_dir/$date_key.json" --config "$project_dir/worker/wrangler.toml" >/dev/null 2>&1; then
     downloaded=$((downloaded + 1))
+    if (( days_ago == 1 )); then has_yesterday=1; fi
     printf 'downloaded daily-v2/%s.json\n' "$date_key"
   else
     rm -f "$data_dir/$date_key.json"
@@ -25,11 +47,18 @@ for days_ago in $(seq 0 27); do
 done
 if (( downloaded == 0 )); then
   echo "R2からdaily-v2を取得できませんでした。Wranglerログインとバケットを確認してください。" >&2
-  exit 1
+  false
+fi
+if (( has_yesterday == 0 )); then
+  echo "昨日分のdaily-v2が未生成のため集計を中止します。Workerの日次圧縮を確認してください。" >&2
+  false
 fi
 
 sql_file="$work_dir/profiles.sql"
+current_step="calculating profiles"
 node "$project_dir/tools/aggregate_phase11_local.mjs" "$data_dir" "$sql_file"
+current_step="uploading profiles to D1"
 "${wrangler[@]}" d1 execute tobus-phase11 --remote --yes --file "$sql_file" \
   --config "$project_dir/worker/wrangler.toml"
+trap - ERR
 echo "Phase 11 local aggregation complete ($downloaded source objects)."

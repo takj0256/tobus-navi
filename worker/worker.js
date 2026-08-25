@@ -54,38 +54,64 @@ export default {
 
 export async function runScheduledCollection(env, now = new Date(), fetchImpl = fetch) {
   if (!env.EVENT_BUCKET) return { enabled: false, events: 0 };
-  const response = await fetchWithTimeout(SOURCE, UPSTREAM_TIMEOUT_MS, fetchImpl);
-  if (!response.ok) throw new Error(`ODPT upstream HTTP ${response.status}`);
-  const feed = decodeGtfsRealtime(await response.arrayBuffer());
-  const state = await readJsonObject(env.EVENT_BUCKET, STATE_KEY, { vehicles: {}, candidates: [] });
-  if (weatherRefreshDue(state, env, now)) {
-    state.weather_attempted_at = now.toISOString();
-    try {
-      state.weather = await fetchCurrentWeather(env, now, fetchImpl);
-      if (env.DB) await storeCurrentWeather(env.DB, state.weather);
-    } catch (error) {
-      state.weather_error = String(error?.message || error).slice(0, 180);
+  let events = [];
+  let collectionError = null;
+  try {
+    const response = await fetchWithTimeout(SOURCE, UPSTREAM_TIMEOUT_MS, fetchImpl);
+    if (!response.ok) throw new Error(`ODPT upstream HTTP ${response.status}`);
+    const feed = decodeGtfsRealtime(await response.arrayBuffer());
+    const state = await readJsonObject(env.EVENT_BUCKET, STATE_KEY, { vehicles: {}, candidates: [] });
+    if (weatherRefreshDue(state, env, now)) {
+      state.weather_attempted_at = now.toISOString();
+      try {
+        state.weather = await fetchCurrentWeather(env, now, fetchImpl);
+        if (env.DB) await storeCurrentWeather(env.DB, state.weather);
+      } catch (error) {
+        state.weather_error = String(error?.message || error).slice(0, 180);
+      }
     }
-  }
-  const events = collectSegmentEvents(feed, state, now.getTime());
+    events = collectSegmentEvents(feed, state, now.getTime());
 
-  if (events.length) {
-    if (env.DB) await processAnomalies(events, state, env, now, fetchImpl);
-    const key = minuteEventKey(now);
-    await env.EVENT_BUCKET.put(key, JSON.stringify({ generated_at: now.toISOString(), events }));
+    if (events.length) {
+      if (env.DB) {
+        try {
+          await processAnomalies(events, state, env, now, fetchImpl);
+          delete state.anomaly_error;
+        } catch (error) {
+          // D1異常判定が落ちても、生の区間イベント収集は止めない。
+          state.anomaly_error = String(error?.message || error).slice(0, 180);
+        }
+      }
+      const key = minuteEventKey(now);
+      await env.EVENT_BUCKET.put(key, JSON.stringify({ generated_at: now.toISOString(), events }));
+    }
+    state.candidates = (state.candidates || []).filter((item) => Number(item.timestampMs) >= now.getTime() - 10 * 60_000).slice(-200);
+    await env.EVENT_BUCKET.put(STATE_KEY, JSON.stringify(state));
+  } catch (error) {
+    collectionError = error;
   }
-  state.candidates = (state.candidates || []).filter((item) => Number(item.timestampMs) >= now.getTime() - 10 * 60_000).slice(-200);
-  await env.EVENT_BUCKET.put(STATE_KEY, JSON.stringify(state));
 
-  if (now.getUTCMinutes() < 2) await compactPreviousHour(env.EVENT_BUCKET, now);
+  // R2保守は収集やD1の一時障害から独立させる。失敗した時間も後続Cronで追いつける。
+  const hourlyCompaction = await compactCompletedHours(env.EVENT_BUCKET, now, 4);
   const holidays = holidaySet(env);
   const legacyUpgrade = await upgradeOneLegacyDailyObject(env.EVENT_BUCKET, now, holidays);
   const dailyCompaction = legacyUpgrade.upgraded
     ? { compacted: false, remainingCompletedDays: 1 }
     : await compactOneCompletedTokyoDay(env.EVENT_BUCKET, now, holidays);
+  if (hourlyCompaction.compacted || legacyUpgrade.upgraded || dailyCompaction.compacted) {
+    console.log(JSON.stringify({
+      phase11_maintenance: true,
+      hourlyKey: hourlyCompaction.hourlyKey || null,
+      remainingCompletedHours: hourlyCompaction.remainingCompletedHours,
+      dailyDate: dailyCompaction.dateKey || legacyUpgrade.dateKey || null,
+      remainingCompletedDays: dailyCompaction.remainingCompletedDays ?? legacyUpgrade.remainingLegacyDays,
+    }));
+  }
+  if (collectionError) throw collectionError;
   return {
     enabled: true,
     events: events.length,
+    remainingCompletedHours: hourlyCompaction.remainingCompletedHours,
     remainingLegacyDays: legacyUpgrade.remainingLegacyDays,
     remainingCompletedDays: dailyCompaction.remainingCompletedDays,
   };
@@ -446,20 +472,38 @@ export function chunkUniqueKeys(keys, maximum = 75) {
   return chunks;
 }
 
-async function compactPreviousHour(bucket, now) {
-  const previous = new Date(now.getTime() - 60 * 60_000);
-  const prefix = hourEventPrefix(previous);
-  const hourlyKey = `hourly/${prefix.slice("events/".length).replace(/\/$/, ".json")}`;
-  if (await bucket.head(hourlyKey)) return;
-  const listed = await bucket.list({ prefix, limit: 120 });
-  if (!listed.objects.length) return;
-  const events = [];
-  for (const object of listed.objects) {
-    const payload = await readJsonObject(bucket, object.key, { events: [] });
-    events.push(...(payload.events || []));
+export async function compactOneCompletedHour(bucket, now) {
+  return compactCompletedHours(bucket, now, 1);
+}
+
+async function compactCompletedHours(bucket, now, maximumHours) {
+  const objects = await listAll(bucket, "events/");
+  const currentPrefix = hourEventPrefix(now);
+  const prefixes = [...new Set(objects.map((object) => eventObjectHourPrefix(object.key))
+    .filter((prefix) => prefix && prefix < currentPrefix))].sort();
+  if (!prefixes.length) return { compacted: false, remainingCompletedHours: 0 };
+
+  const selectedPrefixes = prefixes.slice(0, Math.max(1, maximumHours));
+  const hourlyKeys = [];
+  let sourceObjectCount = 0;
+  for (const prefix of selectedPrefixes) {
+    const hourlyKey = `hourly/${prefix.slice("events/".length).replace(/\/$/, ".json")}`;
+    const sourceObjects = objects.filter((object) => eventObjectHourPrefix(object.key) === prefix);
+    const existing = await readJsonObject(bucket, hourlyKey, { events: [] });
+    const events = [...(existing.events || []), ...await readEventsFromObjects(bucket, sourceObjects)];
+    const uniqueEvents = [...new Map(events.map((event) => [event.event_id || JSON.stringify(event), event])).values()];
+    await bucket.put(hourlyKey, JSON.stringify({ generated_at: now.toISOString(), events: uniqueEvents }));
+    await bucket.delete(sourceObjects.map((item) => item.key));
+    hourlyKeys.push(hourlyKey);
+    sourceObjectCount += sourceObjects.length;
   }
-  await bucket.put(hourlyKey, JSON.stringify({ generated_at: now.toISOString(), events }));
-  await bucket.delete(listed.objects.map((item) => item.key));
+  return {
+    compacted: true,
+    hourlyKey: hourlyKeys.at(-1),
+    hourlyKeys,
+    sourceObjects: sourceObjectCount,
+    remainingCompletedHours: prefixes.length - selectedPrefixes.length,
+  };
 }
 
 export async function compactOneCompletedTokyoDay(bucket, now, holidays = new Set()) {
@@ -473,18 +517,17 @@ export async function compactOneCompletedTokyoDay(bucket, now, holidays = new Se
   const dateKey = completedDays[0];
   const sourceObjects = hourlyObjects.filter((object) => hourlyObjectTokyoDate(object.key) === dateKey);
   const dailyKey = `daily-v2/${dateKey}.json`;
-  if (!(await bucket.head(dailyKey))) {
-    const events = [];
-    for (const object of sourceObjects) {
-      const payload = await readJsonObject(bucket, object.key, { events: [] });
-      events.push(...(payload.events || []));
-    }
+  const existing = await readJsonObject(bucket, dailyKey, null);
+  const includedSourceKeys = new Set(existing?.source_keys || []);
+  const pendingObjects = sourceObjects.filter((object) => !includedSourceKeys.has(object.key));
+  const events = await readEventsFromObjects(bucket, pendingObjects);
+  if (!existing || pendingObjects.length) {
     await bucket.put(dailyKey, JSON.stringify({
       version: 2,
       generated_at: now.toISOString(),
       date_key: dateKey,
-      source_keys: sourceObjects.map((object) => object.key),
-      groups: buildCompactDailyGroups(events, holidays),
+      source_keys: [...new Set([...(existing?.source_keys || []), ...sourceObjects.map((object) => object.key)])].sort(),
+      groups: mergeCompactDailyGroups(existing?.groups || [], buildCompactDailyGroups(events, holidays)),
     }));
   }
   if (sourceObjects.length) await bucket.delete(sourceObjects.map((object) => object.key));
@@ -494,6 +537,20 @@ export async function compactOneCompletedTokyoDay(bucket, now, holidays = new Se
     sourceObjects: sourceObjects.length,
     remainingCompletedDays: completedDays.length - 1,
   };
+}
+
+export function mergeCompactDailyGroups(existingGroups, addedGroups) {
+  const groups = new Map();
+  for (const group of [...(existingGroups || []), ...(addedGroups || [])]) {
+    const key = `${group.segment_key}|${group.day_type}|${group.time_bin}`;
+    const current = groups.get(key);
+    if (!current) {
+      groups.set(key, { ...group, samples: [...(group.samples || [])] });
+    } else {
+      current.samples.push(...(group.samples || []));
+    }
+  }
+  return [...groups.values()];
 }
 
 async function upgradeOneLegacyDailyObject(bucket, now, holidays = new Set()) {
@@ -754,6 +811,16 @@ async function readJsonObject(bucket, key, fallback) {
   try { return await object.json(); } catch { return fallback; }
 }
 
+async function readEventsFromObjects(bucket, objects, batchSize = 10) {
+  const events = [];
+  for (let index = 0; index < objects.length; index += batchSize) {
+    const payloads = await Promise.all(objects.slice(index, index + batchSize)
+      .map((object) => readJsonObject(bucket, object.key, { events: [] })));
+    for (const payload of payloads) events.push(...(payload.events || []));
+  }
+  return events;
+}
+
 async function listAll(bucket, prefix) {
   const objects = [];
   let cursor;
@@ -771,6 +838,10 @@ function minuteEventKey(date) {
 
 function hourEventPrefix(date) {
   return `events/${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, "0")}-${String(date.getUTCDate()).padStart(2, "0")}/${String(date.getUTCHours()).padStart(2, "0")}/`;
+}
+
+function eventObjectHourPrefix(key) {
+  return /^(events\/\d{4}-\d{2}-\d{2}\/\d{2}\/)/.exec(key)?.[1] || null;
 }
 
 function midpoint(a, b) {

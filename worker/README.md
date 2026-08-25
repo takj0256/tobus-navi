@@ -56,8 +56,8 @@ export const REALTIME_PROXY_ENDPOINT = "https://your-worker.workers.dev";
 
 - 毎分Cron：停留所イベント収集、異常判定、R2日次圧縮
 - 15分ごと：Open-Meteoから東京中心点の気温・降水・降雪を取得
-- 毎時：毎分R2オブジェクトを時間バッチへ統合
-- 毎分：完了済みの東京日付があれば、1日ずつ軽量な日次サンプルへ圧縮
+- 毎分：完了済みの分イベントを古い時間から回収し、最大4時間ずつ時間バッチへ統合
+- 毎分：完了済みの東京日付があれば、遅れて到着した時間バッチも既存日次データへ追記
 
 Cloudflare Workers FreeのCPU上限内へ収めるため、直近28日分の中央値、四分位、MAD、
 信頼度、天候倍率の再計算は個人PCへ分離します。WSLで次を1日1回実行してください。
@@ -69,17 +69,22 @@ nvm use 22
 ./tools/run_phase11_local_aggregation.sh
 ```
 
-統計計算をTailscale接続したサブPCへ任せる場合は、メインPCで次を実行します。
-Cloudflare認証をサブPCへコピーせず、R2取得とD1反映だけをメインPC、統計計算だけを
-サブPCで行います。
+統計計算をTailscale接続したサブPCへ任せる場合は、メインPCで次を実行できます。
+R2取得とD1反映だけをメインPC、統計計算だけをサブPCで行います。
 
 ```bash
 ./tools/run_phase11_remote_aggregation.sh
 ```
 
+メインPCを停止しても自動集計を続ける場合は、常時稼働するサブPCへプロジェクトと
+Wrangler認証を用意し、サブPC自身で `run_phase11_local_aggregation.sh` を実行します。
+Cron登録前に、同じLinuxユーザーで `npx wrangler@latest whoami` とR2の読み取りが
+非対話で成功することを確認してください。集計は前日分の `daily-v2` がない場合に中止し、
+D1の `job_status` を `failed` へ更新します。古い `complete` を本日の成功と誤認しません。
+
 PCを常時起動する必要はありません。実行できなかった日はD1の直近結果がそのまま使われ、
 次回の実行時にR2の過去28日分から再計算されます。自動化する場合は、例えば毎日4時15分に
-次をcrontabへ登録します（PCが起動中のときだけ実行されます）。
+次をcrontabへ登録します（登録したPCが起動中のときだけ実行されます）。
 
 ```cron
 15 4 * * * cd /home/roboko3/bityk/bus/tobus-navi-pwa-integrated && /bin/bash -lc 'source ~/.nvm/nvm.sh && nvm use 22 >/dev/null && ./tools/run_phase11_local_aggregation.sh >> /tmp/tobus-phase11-aggregation.log 2>&1'

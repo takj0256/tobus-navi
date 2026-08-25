@@ -6,9 +6,12 @@ import {
   chunkUniqueKeys,
   classifyTemperature,
   classifyWeather,
+  compactOneCompletedHour,
   compactOneCompletedTokyoDay,
   fetchCurrentWeather,
   isSameVehicleConsecutive,
+  mergeCompactDailyGroups,
+  runScheduledCollection,
 } from "../../worker/worker.js";
 
 function vehicle(stopId, sequence, timestamp, overrides = {}) {
@@ -96,6 +99,55 @@ test("完了した東京日付を1日ずつ日次R2オブジェクトへ圧縮�
   assert.equal(bucket.values.get("daily-v2/2026-08-07.json").version, 2);
   assert.equal(bucket.values.get("daily-v2/2026-08-07.json").groups.length, 0);
   assert.equal(bucket.values.has("hourly/2026-08-07/15.json"), true);
+});
+
+test("取りこぼした分イベントを後続Cronで時間別R2へ圧縮する", async () => {
+  const bucket = memoryBucket(new Map([
+    ["events/2026-08-25/03/01-a.json", { events: [{ event_id: "a" }] }],
+    ["events/2026-08-25/03/02-b.json", { events: [{ event_id: "b" }] }],
+    ["events/2026-08-25/04/01-c.json", { events: [{ event_id: "c" }] }],
+  ]));
+  const result = await compactOneCompletedHour(bucket, new Date("2026-08-25T04:30:00Z"));
+  assert.equal(result.hourlyKey, "hourly/2026-08-25/03.json");
+  assert.equal(bucket.values.get(result.hourlyKey).events.length, 2);
+  assert.equal(bucket.values.has("events/2026-08-25/04/01-c.json"), true);
+});
+
+test("既存日次オブジェクトへ遅れて圧縮された時間別データを追記する", async () => {
+  const existingGroup = {
+    segment_key: "r|0|a>b", route_id: "r", direction_id: 0,
+    from_stop_id: "a", to_stop_id: "b", day_type: "saturday", time_bin: "08:00",
+    samples: [[100, Date.parse("2026-08-07T23:00:00Z")]],
+  };
+  const bucket = memoryBucket(new Map([
+    ["daily-v2/2026-08-08.json", { version: 2, source_keys: ["hourly/2026-08-07/15.json"], groups: [existingGroup] }],
+    ["hourly/2026-08-07/16.json", { events: [{
+      event_id: "late", segment_key: "r|0|a>b", route_id: "r", direction_id: 0,
+      from_stop_id: "a", to_stop_id: "b", seconds: 120,
+      timestamp_ms: Date.parse("2026-08-07T23:01:00Z"), anomalous: false,
+    }] }],
+  ]));
+  await compactOneCompletedTokyoDay(bucket, new Date("2026-08-09T00:00:00Z"));
+  const daily = bucket.values.get("daily-v2/2026-08-08.json");
+  assert.equal(daily.groups[0].samples.length, 2);
+  assert.equal(bucket.values.has("hourly/2026-08-07/16.json"), false);
+});
+
+test("収集API失敗時もR2保守を実行してから失敗を報告する", async () => {
+  const bucket = memoryBucket(new Map([
+    ["events/2026-08-25/03/01-a.json", { events: [{ event_id: "a" }] }],
+  ]));
+  await assert.rejects(
+    runScheduledCollection({ EVENT_BUCKET: bucket }, new Date("2026-08-25T04:30:00Z"), async () => new Response("bad", { status: 503 })),
+    /ODPT upstream HTTP 503/,
+  );
+  assert.equal(bucket.values.has("hourly/2026-08-25/03.json"), true);
+});
+
+test("日次グループの追記で同一区間と時間枠を統合する", () => {
+  const base = { segment_key: "s", day_type: "weekday", time_bin: "08:00", samples: [[1, 1]] };
+  const merged = mergeCompactDailyGroups([base], [{ ...base, samples: [[2, 2]] }]);
+  assert.deepEqual(merged[0].samples, [[1, 1], [2, 2]]);
 });
 
 test("日次イベントを区間・曜日・15分枠ごとの軽量サンプルへ変換する", () => {
