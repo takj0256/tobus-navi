@@ -45,6 +45,20 @@ Workerのデプロイ、D1のマイグレーション、集計用コピーの更
 - `/health` は基本応答とbindingの有無しか示さない。DB・R2の読み書きや日次集計成功の証明にはならない。
 - 欠損日と認証のため未確認の日を分ける。日時はJSTを基本にし、UTCとの換算を明示する。
 
+## Phase 11統計JSON（試作）
+
+D1へ書き込まず、取得済みの28日分 `daily-v2` から統計JSONを生成する。
+
+```bash
+node --max-old-space-size=4096 tools/aggregate_phase11_json.mjs INPUT_DAILY_DIR OUTPUT_DIR
+```
+
+出力は `generations/<生成ID>/profiles/<曜日区分>/<15分枠>.json`、`weather-profiles.json`、`manifest.json` と、参照候補の `current.json`。
+manifestには入力日、件数、平均・最大信頼度、最大sample_count、各シャードのサイズとSHA-256を含む。
+
+現時点では生成・検証専用であり、Workerは引き続きD1を参照する。R2へprofile JSONを置くこと、`current.json`を切り替えること、Workerをデプロイすることは別の本番操作として扱う。
+公開前に、manifestを最後に更新する原子的切替、旧generationの保持、R2障害時のD1フォールバック、キャッシュと読取回数、最大シャードサイズを検証する。
+
 ## 既知の注意と復旧順
 
 Cloudflare D1は変更行数を消費し、まとめてSQL送信しても行数は減らない。料金・上限は変更時に公式情報を確認する。
