@@ -5,7 +5,8 @@
 ## 2026-09-09 サブPC欠損復元・JSON集計
 
 - 担当ホスト：サブPC `MSI`。ブランチ：`work/phase11-json-profiles`。
-- 作業開始時のHEADは `a935335`。作業ツリーはクリーンだったが、WSLのDNS障害で `git fetch origin` は失敗し、GitHub最新状態は未確認。
+- 作業開始時のHEADは `a935335`。開始時はWSLのDNS障害で `git fetch origin` が失敗したが、静的DNSとGitHub SSH 443番、このPC専用鍵を設定して接続を回復した。
+- `origin/main` の `a935335` を確認済み。JSON集計の `d881843` は `origin/work/phase11-json-profiles` へpushし、ローカルとGitHubのHEAD一致を確認した。
 - R2 `daily-v2` の2026-09-03～09-08が欠損していることを実測し、元の `events` / `hourly` から6日分を復元した。各オブジェクトはアップロード後に再読込し、日付と非空グループを確認した。
 - 2026-08-12～09-08の28日分を使い、D1書き込みを行わずJSON集計を実施。265,534 profiles、1,257 weather profilesを生成した。
 - profile統計：平均信頼度0.497361、最大0.981166、最大sample_count 40。weather profile統計：平均信頼度0.854541、最大0.964082、最大sample_count 793,503。
