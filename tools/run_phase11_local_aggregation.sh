@@ -17,11 +17,7 @@ current_step="initialization"
 mark_failed() {
   code=$?
   trap - ERR
-  error_text="failed at $current_step (exit $code)"
-  "${wrangler[@]}" d1 execute tobus-phase11 --remote --yes \
-    --command="INSERT INTO job_status (job_name,status,started_at,completed_at,source_objects,profile_count,error) VALUES ('profile-aggregation','failed','$started_at','$(date -u +%Y-%m-%dT%H:%M:%SZ)',0,0,'$error_text') ON CONFLICT(job_name) DO UPDATE SET status='failed',started_at=excluded.started_at,completed_at=excluded.completed_at,error=excluded.error" \
-    --config "$project_dir/worker/wrangler.toml" >/dev/null 2>&1 || true
-  echo "Phase 11 aggregation $error_text" >&2
+  echo "Phase 11 JSON aggregation failed at $current_step (exit $code, started $started_at)" >&2
   exit "$code"
 }
 trap mark_failed ERR
@@ -36,11 +32,6 @@ if ! "${wrangler[@]}" r2 object get "tobus-phase11-events/daily-v2/$yesterday_ke
   rm -f "$probe_file"
   node "$project_dir/tools/recover_phase11_daily_from_r2.mjs" "$yesterday_key"
 fi
-
-current_step="recording running status"
-"${wrangler[@]}" d1 execute tobus-phase11 --remote --yes \
-  --command="INSERT INTO job_status (job_name,status,started_at,completed_at,source_objects,profile_count,error) VALUES ('profile-aggregation','running','$started_at',NULL,0,0,NULL) ON CONFLICT(job_name) DO UPDATE SET status='running',started_at=excluded.started_at,completed_at=NULL,source_objects=0,profile_count=0,error=NULL" \
-  --config "$project_dir/worker/wrangler.toml" >/dev/null
 
 downloaded=0
 has_yesterday=0
@@ -65,11 +56,10 @@ if (( has_yesterday == 0 )); then
   false
 fi
 
-sql_file="$work_dir/profiles.sql"
-current_step="calculating profiles"
-node "$project_dir/tools/aggregate_phase11_local.mjs" "$data_dir" "$sql_file"
-current_step="uploading profiles to D1"
-"${wrangler[@]}" d1 execute tobus-phase11 --remote --yes --file "$sql_file" \
-  --config "$project_dir/worker/wrangler.toml"
+output_dir="$work_dir/profiles-json"
+current_step="calculating profile JSON"
+node --max-old-space-size=4096 "$project_dir/tools/aggregate_phase11_json.mjs" "$data_dir" "$output_dir"
+current_step="publishing profile JSON to R2"
+node "$project_dir/tools/publish_phase11_json_to_r2.mjs" "$output_dir"
 trap - ERR
-echo "Phase 11 local aggregation complete ($downloaded source objects)."
+echo "Phase 11 JSON aggregation complete ($downloaded source objects, no D1 writes)."

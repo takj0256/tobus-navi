@@ -45,7 +45,7 @@ Workerのデプロイ、D1のマイグレーション、集計用コピーの更
 - `/health` は基本応答とbindingの有無しか示さない。DB・R2の読み書きや日次集計成功の証明にはならない。
 - 欠損日と認証のため未確認の日を分ける。日時はJSTを基本にし、UTCとの換算を明示する。
 
-## Phase 11統計JSON（試作）
+## Phase 11統計JSON（日次生成・公開）
 
 D1へ書き込まず、取得済みの28日分 `daily-v2` から統計JSONを生成する。
 
@@ -56,8 +56,11 @@ node --max-old-space-size=4096 tools/aggregate_phase11_json.mjs INPUT_DAILY_DIR 
 出力は `generations/<生成ID>/profiles/<曜日区分>/<15分枠>.json`、`weather-profiles.json`、`manifest.json` と、参照候補の `current.json`。
 manifestには入力日、件数、平均・最大信頼度、最大sample_count、各シャードのサイズとSHA-256を含む。
 
-現時点では生成・検証専用であり、Workerは引き続きD1を参照する。R2へprofile JSONを置くこと、`current.json`を切り替えること、Workerをデプロイすることは別の本番操作として扱う。
-公開前に、manifestを最後に更新する原子的切替、旧generationの保持、R2障害時のD1フォールバック、キャッシュと読取回数、最大シャードサイズを検証する。
+04:15の`tools/run_phase11_local_aggregation.sh`は、直近28日の取得とJSON生成後、`tools/publish_phase11_json_to_r2.mjs`でR2の`profiles-v1/generations/<生成ID>/`へ公開する。各シャードのサイズとSHA-256をローカル検証し、世代manifestのアップロードと再読込が成功した後に限り、`profiles-v1/current.json`を最後に更新する。途中失敗ではcurrentを切り替えず、旧generationも自動削除しない。この経路はD1へ書き込まない。
+
+点検時は`profiles-v1/current.json`の`generated_at`、`source_dates`、件数・信頼度統計を日次成功の一次根拠にする。D1の`job_status`は旧方式の最終実行記録として扱い、新しい当日成功の根拠にしない。Workerは現時点で引き続きD1を参照するため、R2公開の成功と本番利用開始を区別する。
+
+WorkerのR2参照切替は未実施。切替前にR2障害時のD1フォールバック、キャッシュと読取回数、最大シャードサイズを検証し、別途デプロイする。
 
 ## 既知の注意と復旧順
 
