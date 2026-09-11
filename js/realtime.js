@@ -193,6 +193,9 @@ export function estimateVehicleProgress(vehicle, trip, routeData, targetStopId, 
   if (!Number.isFinite(secondsToTarget)) return null;
   const targetEtaMs = nowMs + secondsToTarget * 1000;
   const range = buildEtaRange(targetEtaMs, nowMs, model, Math.max(0, targetIndex - firstReachableIndex));
+  const scheduledTargetMs = scheduledTimestampMs(
+    serviceDate, stopTimes[targetIndex]?.[2] ?? stopTimes[targetIndex]?.[1] ?? 0,
+  );
 
   return {
     serviceDate,
@@ -205,6 +208,9 @@ export function estimateVehicleProgress(vehicle, trip, routeData, targetStopId, 
     etaMinMs: range.minMs,
     etaMaxMs: range.maxMs,
     etaLabel: formatEtaRange(range.minMs, range.maxMs, nowMs),
+    scheduledTargetMs,
+    scheduleDelayMs: targetEtaMs - scheduledTargetMs,
+    scheduleDelay: describeScheduleDelay(scheduledTargetMs, range.minMs, range.maxMs),
     minutes: roundedMinutesUntil(targetEtaMs, nowMs),
     minutesMin: roundedMinutesUntil(range.minMs, nowMs),
     minutesMax: roundedMinutesUntil(range.maxMs, nowMs),
@@ -244,6 +250,7 @@ export function buildFutureStopEstimates(vehicle, trip, routeData, nowMs = Date.
     lastEtaMs = etaMs;
     const range = buildEtaRange(etaMs, nowMs, model, offset);
     const isCurrentStop = model.isStopped && index === model.currentIndex;
+    const scheduledMs = scheduledTimestampMs(serviceDate, stopTime[1] ?? stopTime[2] ?? 0);
     return {
       stop_id: stopTime[0],
       stop_name: stop.stop_name,
@@ -254,10 +261,39 @@ export function buildFutureStopEstimates(vehicle, trip, routeData, nowMs = Date.
       eta_min_ms: range.minMs,
       eta_max_ms: range.maxMs,
       eta_label: isCurrentStop ? "現在停車中" : formatEtaRange(range.minMs, range.maxMs, nowMs),
+      scheduled_ms: scheduledMs,
+      schedule_delay_ms: etaMs - scheduledMs,
+      schedule_delay: describeScheduleDelay(scheduledMs, range.minMs, range.maxMs),
       minutes: roundedMinutesUntil(etaMs, nowMs),
       isCurrent: isCurrentStop,
     };
   });
+}
+
+export function describeScheduleDelay(scheduledMs, etaMinMs, etaMaxMs, options = {}) {
+  const [scheduled, etaMin, etaMax] = [scheduledMs, etaMinMs, etaMaxMs].map(Number);
+  if (![scheduled, etaMin, etaMax].every(Number.isFinite) || etaMax < etaMin) {
+    return { key: "unknown", label: "遅延を確認中" };
+  }
+  const maximumRangeMs = Number(options.maximumRangeMs ?? 10 * 60_000);
+  if (etaMax - etaMin > maximumRangeMs) {
+    return { key: "unknown", label: "遅延幅を確認中" };
+  }
+  const thresholdMs = Number(options.thresholdMs ?? 90_000);
+  const minimumDelayMs = etaMin - scheduled;
+  const maximumDelayMs = etaMax - scheduled;
+  if (minimumDelayMs >= thresholdMs) {
+    const minimumMinutes = Math.max(1, Math.floor(minimumDelayMs / 60_000));
+    const maximumMinutes = Math.max(minimumMinutes, Math.ceil(maximumDelayMs / 60_000));
+    const label = maximumMinutes - minimumMinutes <= 1
+      ? `約${Math.round((minimumDelayMs + maximumDelayMs) / 120_000)}分遅れ見込み`
+      : `${minimumMinutes}〜${maximumMinutes}分遅れ見込み`;
+    return { key: "late", label };
+  }
+  if (maximumDelayMs <= -thresholdMs) {
+    return { key: "early", label: "定刻前の到着見込み" };
+  }
+  return { key: "on-time", label: "定刻付近（推定）" };
 }
 
 export function buildMotionModel(vehicle, trip, routeData, serviceDate, nowMs = Date.now(), options = {}) {

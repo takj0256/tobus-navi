@@ -18,6 +18,11 @@ const EVENT_RETENTION_DAYS = 28;
 const STATE_KEY = "state/latest.json";
 const ANOMALY_MINIMUM_SAMPLES = 8;
 const ANOMALY_MINIMUM_CONFIDENCE = 0.65;
+const PROFILE_JSON_PREFIX = "profiles-v1";
+const PROFILE_MANIFEST_CACHE_SECONDS = 5 * 60;
+const PROFILE_SHARD_CACHE_SECONDS = 24 * 60 * 60;
+const PROFILE_MEMORY_CACHE_MAXIMUM = 8;
+const profileJsonMemoryCaches = new WeakMap();
 const TOKYO_DATE_FORMATTER = new Intl.DateTimeFormat("en-CA", {
   timeZone: "Asia/Tokyo", year: "numeric", month: "2-digit", day: "2-digit",
 });
@@ -29,7 +34,7 @@ export default {
     const url = new URL(request.url);
 
     if (url.pathname === "/health") {
-      return jsonResponse({ ok: true, phase11: Boolean(env.DB && env.EVENT_BUCKET) }, 200, env);
+      return jsonResponse({ ok: true, phase11: Boolean(env.DB || env.EVENT_BUCKET) }, 200, env);
     }
     if (url.pathname === "/api/v1/estimates" && request.method === "POST") {
       return handleEstimateBatch(request, env);
@@ -178,7 +183,9 @@ export function collectSegmentEvents(feed, state, nowMs = Date.now()) {
 }
 
 async function processAnomalies(events, state, env, now, fetchImpl) {
-  const profileMap = await readProfilesForSegments(env.DB, events.map((event) => event.segment_key), now.getTime(), holidaySet(env));
+  const { profiles: profileMap } = await loadProfilesForSegments(
+    env, events.map((event) => event.segment_key), now.getTime(), holidaySet(env),
+  );
   for (const event of events) {
     const profile = profileMap.get(event.segment_key);
     if (!profile
@@ -375,27 +382,64 @@ async function queryAndStoreTraffic(event, anomaly, env, now, fetchImpl) {
 }
 
 async function handleEstimateBatch(request, env) {
-  if (!env.DB) return jsonResponse({ estimates: [], fallback: "phase10", reason: "database-not-configured" }, 200, env);
+  if (!env.DB && !env.EVENT_BUCKET) {
+    return jsonResponse({ estimates: [], fallback: "phase10", reason: "profile-storage-not-configured" }, 200, env);
+  }
   let body;
   try { body = await request.json(); } catch { return jsonResponse({ error: "invalid-json" }, 400, env); }
   const segments = Array.isArray(body.segments) ? body.segments.slice(0, 120) : [];
   if (!segments.length) return jsonResponse({ estimates: [] }, 200, env);
   const atMs = Number.isFinite(Date.parse(body.at)) ? Date.parse(body.at) : Date.now();
   const keys = [...new Set(segments.map((item) => item.segment_key).filter(Boolean))];
-  const profiles = await readProfilesForSegments(env.DB, keys, atMs, holidaySet(env));
-  const corrections = await readCorrectionsForSegments(env.DB, keys, atMs);
-  const weatherProfiles = await readWeatherProfilesForSegments(env.DB, segments, atMs);
+  const profileLoad = await loadProfilesForSegments(env, keys, atMs, holidaySet(env));
+  const profiles = profileLoad.profiles;
+  let corrections = new Map();
+  let correctionSource = "unavailable";
+  if (env.DB) {
+    try {
+      corrections = await readCorrectionsForSegments(env.DB, keys, atMs);
+      correctionSource = "d1";
+    } catch (error) {
+      console.warn("Phase 11 D1 corrections unavailable", error);
+    }
+  }
+  let weatherProfiles = new Map();
+  let weatherSource = "unavailable";
+  if (env.EVENT_BUCKET && env.DB && profileLoad.manifest) {
+    try {
+      weatherProfiles = await readWeatherProfilesFromR2(env.EVENT_BUCKET, env.DB, segments, atMs, profileLoad.manifest, env);
+      weatherSource = "r2-json";
+    } catch (error) {
+      console.warn("Phase 11 R2 weather profile fallback", error);
+    }
+  }
+  if (weatherSource === "unavailable" && env.DB) {
+    try {
+      weatherProfiles = await readWeatherProfilesForSegments(env.DB, segments, atMs);
+      weatherSource = "d1";
+    } catch (error) {
+      console.warn("Phase 11 D1 weather profiles unavailable", error);
+    }
+  }
   const estimates = segments.map((segment) => ({
     segment_key: segment.segment_key,
     profile: profiles.get(segment.segment_key) || null,
     correction: corrections.get(segment.segment_key) || { active: false },
     weather: weatherProfiles.get(segment.segment_key) || { active: false },
   })).filter((item) => item.profile || item.correction.active || item.weather.active);
-  return jsonResponse({ generated_at: new Date(atMs).toISOString(), estimates }, 200, env);
+  return jsonResponse({
+    generated_at: new Date(atMs).toISOString(),
+    profile_generation: profileLoad.manifest?.generation || null,
+    sources: { profiles: profileLoad.source, weather_profiles: weatherSource, corrections: correctionSource },
+    estimates,
+  }, 200, env);
 }
 
 async function handleSingleEstimate(url, env, kind) {
-  if (!env.DB) return jsonResponse({ active: false, fallback: "phase10" }, 200, env);
+  if (kind === "correction" && !env.DB) return jsonResponse({ active: false, fallback: "phase10" }, 200, env);
+  if (kind === "profile" && !env.DB && !env.EVENT_BUCKET) {
+    return jsonResponse({ active: false, fallback: "phase10" }, 200, env);
+  }
   const routeId = url.searchParams.get("route_id") || "";
   const directionId = url.searchParams.get("direction_id") || "";
   const fromStopId = url.searchParams.get("from_stop_id") || "";
@@ -403,10 +447,151 @@ async function handleSingleEstimate(url, env, kind) {
   if (!routeId || !fromStopId || !toStopId) return jsonResponse({ error: "missing-segment-parameters" }, 400, env);
   const key = phase11SegmentKey(routeId, directionId, fromStopId, toStopId);
   const atMs = Number.isFinite(Date.parse(url.searchParams.get("at"))) ? Date.parse(url.searchParams.get("at")) : Date.now();
-  const map = kind === "profile"
-    ? await readProfilesForSegments(env.DB, [key], atMs, holidaySet(env))
-    : await readCorrectionsForSegments(env.DB, [key], atMs);
+  if (kind === "profile") {
+    const loaded = await loadProfilesForSegments(env, [key], atMs, holidaySet(env));
+    return jsonResponse({ ...(loaded.profiles.get(key) || { active: false, segment_key: key }), profile_source: loaded.source }, 200, env);
+  }
+  const map = await readCorrectionsForSegments(env.DB, [key], atMs);
   return jsonResponse(map.get(key) || { active: false, segment_key: key }, 200, env);
+}
+
+async function loadProfilesForSegments(env, keys, atMs, holidays) {
+  if (env.EVENT_BUCKET) {
+    try {
+      const loaded = await readProfilesFromR2(env.EVENT_BUCKET, keys, atMs, holidays, env);
+      return { ...loaded, source: "r2-json" };
+    } catch (error) {
+      console.warn("Phase 11 R2 profile fallback", error);
+    }
+  }
+  if (env.DB) {
+    try {
+      return { profiles: await readProfilesForSegments(env.DB, keys, atMs, holidays), manifest: null, source: "d1" };
+    } catch (error) {
+      console.warn("Phase 11 D1 profiles unavailable", error);
+    }
+  }
+  return { profiles: new Map(), manifest: null, source: "unavailable" };
+}
+
+export async function readProfilesFromR2(bucket, keys, atMs, holidays = new Set(), env = {}) {
+  const prefix = normalizedProfilePrefix(env.PROFILE_JSON_PREFIX || PROFILE_JSON_PREFIX);
+  const manifest = await readCachedR2Json(
+    bucket, `${prefix}/current.json`, Number(env.PROFILE_MANIFEST_CACHE_SECONDS || PROFILE_MANIFEST_CACHE_SECONDS),
+  );
+  validateProfileManifest(manifest);
+  const dayType = phase11DayType(atMs, holidays);
+  const timeBin = phase11TimeBin(atMs);
+  const shard = manifest.shards.find((item) => item.day_type === dayType && item.time_bin === timeBin);
+  if (!shard) return { profiles: new Map(), manifest };
+  if (!/^profiles\/(weekday|saturday|holiday)\/\d{4}\.json$/.test(shard.path)) {
+    throw new Error(`invalid Phase 11 shard path: ${shard.path}`);
+  }
+  const payload = await readCachedR2Json(
+    bucket,
+    `${prefix}/generations/${manifest.generation}/${shard.path}`,
+    Number(env.PROFILE_SHARD_CACHE_SECONDS || PROFILE_SHARD_CACHE_SECONDS),
+  );
+  if (payload?.version !== 1 || payload.generated_at !== manifest.generated_at || !Array.isArray(payload.profiles)) {
+    throw new Error("invalid Phase 11 profile shard");
+  }
+  const wanted = new Set(keys);
+  return {
+    profiles: new Map(payload.profiles.filter((row) => wanted.has(row.segment_key)).map((row) => [row.segment_key, row])),
+    manifest,
+  };
+}
+
+async function readWeatherProfilesFromR2(bucket, db, segments, atMs, manifest, env) {
+  const current = await readCurrentWeather(db, atMs);
+  if (!current) return new Map();
+  validateProfileManifest(manifest);
+  if (manifest.weather?.path !== "weather-profiles.json") throw new Error("invalid Phase 11 weather path");
+  const prefix = normalizedProfilePrefix(env.PROFILE_JSON_PREFIX || PROFILE_JSON_PREFIX);
+  const payload = await readCachedR2Json(
+    bucket,
+    `${prefix}/generations/${manifest.generation}/${manifest.weather.path}`,
+    Number(env.PROFILE_SHARD_CACHE_SECONDS || PROFILE_SHARD_CACHE_SECONDS),
+  );
+  if (payload?.version !== 1 || payload.generated_at !== manifest.generated_at || !Array.isArray(payload.weather_profiles)) {
+    throw new Error("invalid Phase 11 weather profiles");
+  }
+  const candidates = new Map();
+  for (const row of payload.weather_profiles) {
+    if (row.weather_class !== current.weather_class || row.temperature_band !== current.temperature_band) continue;
+    candidates.set(`${row.route_id}|${row.direction_id}`, row);
+  }
+  const global = candidates.get("*|");
+  const result = new Map();
+  for (const segment of segments) {
+    const routeProfile = candidates.get(`${String(segment.route_id || "")}|${String(segment.direction_id ?? "")}`);
+    const profile = routeProfile || global;
+    if (profile) result.set(segment.segment_key, activeWeatherProfile(profile, current, !routeProfile));
+  }
+  return result;
+}
+
+function validateProfileManifest(manifest) {
+  if (manifest?.version !== 1 || manifest.format !== "phase11-profile-shards"
+    || !/^[0-9A-Za-z._-]+$/.test(manifest.generation || "")
+    || !Number.isFinite(Date.parse(manifest.generated_at || ""))
+    || !Array.isArray(manifest.shards)) {
+    throw new Error("invalid Phase 11 current manifest");
+  }
+}
+
+function normalizedProfilePrefix(value) {
+  const prefix = String(value || "").replace(/^\/+|\/+$/g, "");
+  if (!prefix || prefix.includes("..")) throw new Error("invalid Phase 11 profile prefix");
+  return prefix;
+}
+
+async function readCachedR2Json(bucket, key, cacheSeconds) {
+  const ttlSeconds = Math.max(1, Number(cacheSeconds) || 1);
+  let profileJsonMemoryCache = profileJsonMemoryCaches.get(bucket);
+  if (!profileJsonMemoryCache) {
+    profileJsonMemoryCache = new Map();
+    profileJsonMemoryCaches.set(bucket, profileJsonMemoryCache);
+  }
+  const memoryCached = profileJsonMemoryCache.get(key);
+  if (memoryCached && memoryCached.expiresAt > Date.now()) {
+    profileJsonMemoryCache.delete(key);
+    profileJsonMemoryCache.set(key, memoryCached);
+    return memoryCached.value;
+  }
+  if (memoryCached) profileJsonMemoryCache.delete(key);
+  const cache = globalThis.caches?.default || null;
+  const cacheKey = new Request(`https://phase11.invalid/profile-json/${encodeURIComponent(key)}`);
+  if (cache) {
+    try {
+      const cached = await cache.match(cacheKey);
+      if (cached) {
+        const value = await cached.json();
+        rememberProfileJson(profileJsonMemoryCache, key, value, ttlSeconds);
+        return value;
+      }
+    } catch {}
+  }
+  const object = await bucket.get(key);
+  if (!object) throw new Error(`R2 object not found: ${key}`);
+  const value = await object.json();
+  rememberProfileJson(profileJsonMemoryCache, key, value, ttlSeconds);
+  if (cache) {
+    try {
+      await cache.put(cacheKey, new Response(JSON.stringify(value), {
+        headers: { "Content-Type": "application/json", "Cache-Control": `public, max-age=${ttlSeconds}` },
+      }));
+    } catch {}
+  }
+  return value;
+}
+
+function rememberProfileJson(cache, key, value, ttlSeconds) {
+  cache.delete(key);
+  cache.set(key, { value, expiresAt: Date.now() + ttlSeconds * 1000 });
+  while (cache.size > PROFILE_MEMORY_CACHE_MAXIMUM) {
+    cache.delete(cache.keys().next().value);
+  }
 }
 
 async function readProfilesForSegments(db, keys, atMs, holidays = new Set()) {
@@ -438,9 +623,8 @@ async function readCorrectionsForSegments(db, keys, atMs) {
 async function readWeatherProfilesForSegments(db, segments, atMs) {
   const result = new Map();
   if (!db || !segments.length) return result;
-  const current = await db.prepare("SELECT * FROM weather_current WHERE id = 1").first();
-  const observedAt = Date.parse(current?.observed_at || "");
-  if (!Number.isFinite(observedAt) || Math.abs(atMs - observedAt) > WEATHER_MAXIMUM_AGE_MS) return result;
+  const current = await readCurrentWeather(db, atMs);
+  if (!current) return result;
   const routes = [...new Set(segments.map((segment) => String(segment.route_id || "")).filter(Boolean))];
   const profiles = new Map();
   for (const chunk of chunkUniqueKeys(routes, 70)) {
@@ -459,17 +643,28 @@ async function readWeatherProfilesForSegments(db, segments, atMs) {
     const routeProfile = profiles.get(`${String(segment.route_id || "")}|${String(segment.direction_id ?? "")}`);
     const profile = routeProfile || global;
     if (!profile) continue;
-    result.set(segment.segment_key, {
-      ...profile,
-      active: true,
-      fallback_scope: routeProfile ? null : "global",
-      current_temperature_c: current.temperature_c,
-      current_precipitation_mm: current.precipitation_mm,
-      current_weather_code: current.weather_code,
-      observed_at: current.observed_at,
-    });
+    result.set(segment.segment_key, activeWeatherProfile(profile, current, !routeProfile));
   }
   return result;
+}
+
+async function readCurrentWeather(db, atMs) {
+  if (!db) return null;
+  const current = await db.prepare("SELECT * FROM weather_current WHERE id = 1").first();
+  const observedAt = Date.parse(current?.observed_at || "");
+  return Number.isFinite(observedAt) && Math.abs(atMs - observedAt) <= WEATHER_MAXIMUM_AGE_MS ? current : null;
+}
+
+function activeWeatherProfile(profile, current, globalFallback) {
+  return {
+    ...profile,
+    active: true,
+    fallback_scope: globalFallback ? "global" : null,
+    current_temperature_c: current.temperature_c,
+    current_precipitation_mm: current.precipitation_mm,
+    current_weather_code: current.weather_code,
+    observed_at: current.observed_at,
+  };
 }
 
 export function chunkUniqueKeys(keys, maximum = 75) {

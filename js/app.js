@@ -487,29 +487,41 @@ async function openPlatformDetail(groupId, stopId, preferredRouteKey = "") {
 function renderStaticSchedule() {
   if (!state.activeSelection || !state.activeRouteEntries.length) return;
   const now = new Date();
+  renderUpcomingDepartures([], false, now);
+  elements.routeDetailStatus.textContent = `${state.activeRouteEntries.length}系統の正式GTFS-JP時刻表を統合しています。`;
+  elements.timetableDate.textContent = new Intl.DateTimeFormat("ja-JP", {
+    timeZone: "Asia/Tokyo", month: "numeric", day: "numeric", weekday: "short",
+  }).format(now);
+
+  elements.dailyTimetable.innerHTML = `<p class="empty-message">「時刻表を開く」をタップすると、系統・行き先ごとに本日の全便を表示します。</p>`;
+  if (elements.timetableDetails.open) renderDailyTimetable();
+}
+
+function renderUpcomingDepartures(liveVehicles = [], stale = false, now = new Date()) {
   const upcoming = mergePlatformDepartures(
     state.activeRouteEntries,
     state.activeSelection.platform.stop_id,
     now,
     12,
   );
-  elements.routeDetailStatus.textContent = `${state.activeRouteEntries.length}系統の正式GTFS-JP時刻表を統合しています。`;
-  elements.timetableDate.textContent = new Intl.DateTimeFormat("ja-JP", {
-    timeZone: "Asia/Tokyo", month: "numeric", day: "numeric", weekday: "short",
-  }).format(now);
+  const liveByTrip = new Map(liveVehicles.map((item) => [
+    `${item.trip?.trip_id || ""}|${item.serviceDate || ""}`, item,
+  ]));
 
   elements.upcomingDepartures.innerHTML = upcoming.length ? upcoming.map((departure) => {
     const mins = minutesUntil(departure.departure_ms, now.getTime());
+    const live = liveByTrip.get(`${departure.trip_id}|${departure.service_date}`);
+    const delay = stale && live
+      ? { key: "unknown", label: "遅延を確認中（位置情報が古い）" }
+      : live?.scheduleDelay;
     return `<div class="departure-card combined-departure">
       <span class="departure-route">${escapeHtml(departure.route.route_name || "系統")}</span>
       <span class="departure-destination">${escapeHtml(displayHeadsign(departure.route.headsign))}</span>
       <strong>${formatTimestampClock(departure.departure_ms)}</strong>
       <span>${mins === 0 ? "まもなく" : `あと${mins}分`}</span>
+      ${delay ? `<span class="schedule-delay ${escapeHtml(delay.key)}">${escapeHtml(delay.label)}</span>` : ""}
     </div>`;
   }).join("") : `<p class="empty-message">この先30時間以内の発車予定がありません。</p>`;
-
-  elements.dailyTimetable.innerHTML = `<p class="empty-message">「時刻表を開く」をタップすると、系統・行き先ごとに本日の全便を表示します。</p>`;
-  if (elements.timetableDetails.open) renderDailyTimetable();
 }
 
 function renderDailyTimetable() {
@@ -613,6 +625,7 @@ async function refreshRealtime(userRequested = false) {
     elements.routeDetailStatus.textContent = `車両位置を取得できませんでした。${retrySeconds}秒後に再試行します。時刻表は利用できます。`;
     elements.liveBusList.innerHTML = realtimeErrorMarkup(error, retrySeconds);
     elements.approachLaneList.innerHTML = `<p class="empty-message">リアルタイム情報を取得できないため、停留所間の推定位置を表示できません。</p>`;
+    renderUpcomingDepartures([], true, new Date());
   } finally {
     if (generation === state.realtimeGeneration) {
       state.realtimeInFlight = false;
@@ -673,6 +686,7 @@ function renderRealtime() {
   elements.routeDetailStatus.textContent = stale
     ? `位置情報が古い可能性があります（${ageLabel}・${sourceLabel}）。補正しながら自動再取得を継続します。`
     : `接近中 ${vehicles.length}台・最終更新 ${feedTime}（${ageLabel}）・週間／先行車実績で混雑補正`;
+  renderUpcomingDepartures(vehicles, stale, new Date(nowMs));
 
   if (!vehicles.length) {
     elements.liveBusList.innerHTML = `<p class="empty-message">現在、こののりばへ向かう車両をGTFS-RT上で確認できません。予定時刻表をご利用ください。</p>`;
@@ -686,11 +700,15 @@ function renderRealtime() {
     const label = item.vehicle.vehicle?.label || item.vehicle.vehicle?.id || `バス${index + 1}`;
     const vehicleType = classifyVehicleType(label);
     const staleClass = stale ? "stale" : "";
+    const delay = stale
+      ? { key: "unknown", label: "遅延を確認中（位置情報が古い）" }
+      : item.scheduleDelay || { key: "unknown", label: "遅延を確認中" };
     return `<button class="live-bus-card combined-live-card ${vehicleId === state.selectedVehicleId ? "selected" : ""} ${staleClass}" type="button" data-vehicle-id="${escapeHtml(vehicleId)}">
       <span class="live-bus-route"><b>${escapeHtml(item.route.route_name || "系統")}</b><span>${escapeHtml(displayHeadsign(item.route.headsign))}</span></span>
       <span class="live-bus-top"><strong>${escapeHtml(label)}</strong><span class="vehicle-type-badge ${vehicleType.key}">${escapeHtml(vehicleType.icon)} ${escapeHtml(vehicleType.label)}</span><span class="live-status">${escapeHtml(item.vehicle.hasCurrentStatus ? realtimeStatusLabel(item.vehicle.currentStatus) : "位置推定")}</span></span>
       <span class="live-location">${escapeHtml(item.currentLabel)}</span>
       <span class="live-eta"><b>${escapeHtml(item.etaLabel || (item.minutes === 0 ? "まもなく" : `約${item.minutes}分`))}</b>・${item.stopsAway}停留所前</span>
+      <span class="schedule-delay ${escapeHtml(delay.key)}">${escapeHtml(delay.label)}</span>
       <span class="live-correction">${escapeHtml(item.correctionLabel || "時刻表と配信時刻から補正")}</span>
       <span class="live-updated">位置更新 ${escapeHtml(item.updatedAt)}　詳細を見る ›</span>
     </button>`;
@@ -698,7 +716,7 @@ function renderRealtime() {
 
   bindVehicleButtons(elements.liveBusList, vehicles);
   renderApproachLanes(vehicles);
-  if (state.selectedVehicleId) renderVehicleTracking(vehicles);
+  if (state.selectedVehicleId) renderVehicleTracking(vehicles, stale);
 }
 
 function renderApproachLanes(vehicles) {
@@ -760,7 +778,7 @@ function bindVehicleButtons(container, vehicles) {
   });
 }
 
-function renderVehicleTracking(vehicles) {
+function renderVehicleTracking(vehicles, stale = false) {
   if (!state.selectedVehicleId || !vehicles.length) {
     elements.vehicleTrackingSection.classList.add("hidden");
     elements.futureStopsList.innerHTML = "";
@@ -789,7 +807,7 @@ function renderVehicleTracking(vehicles) {
     <li class="progress-item ${stop.isCurrent ? "current" : ""}">
       <span class="progress-marker" aria-hidden="true"></span>
       <div><strong>${escapeHtml(stop.stop_name)}</strong>${stop.platform_code ? `<small>${escapeHtml(stop.platform_code)}</small>` : ""}</div>
-      <span class="progress-time">${escapeHtml(stop.eta_label || (stop.minutes === 0 ? "現在付近" : `約${stop.minutes}分`))}<small>${formatTimestampClock(stop.eta_ms)}頃</small></span>
+      <span class="progress-time">${escapeHtml(stop.eta_label || (stop.minutes === 0 ? "現在付近" : `約${stop.minutes}分`))}<small>${formatTimestampClock(stop.eta_ms)}頃</small><small class="schedule-delay ${escapeHtml(stale ? "unknown" : stop.schedule_delay?.key || "unknown")}">${escapeHtml(stale ? "遅延を確認中" : stop.schedule_delay?.label || "遅延を確認中")}</small></span>
     </li>`).join("");
 }
 

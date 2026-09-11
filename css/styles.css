@@ -403,6 +403,15 @@ footer p { margin-bottom: .35rem; }
 .live-location { color: var(--muted); }
 .live-eta { font-size: 1rem; }
 .live-eta b { color: var(--primary-dark); font-size: 1.15rem; }
+.schedule-delay {
+  color: var(--muted);
+  font-size: .75rem;
+  font-weight: 800;
+}
+.schedule-delay.late { color: #a33a25; }
+.schedule-delay.on-time { color: #28724a; }
+.schedule-delay.early { color: #306a8f; }
+.schedule-delay.unknown { color: var(--muted); }
 .live-updated { color: var(--muted); font-size: .74rem; }
 .vehicle-summary {
   display: flex;
@@ -462,6 +471,7 @@ footer p { margin-bottom: .35rem; }
 }
 .departure-card strong { color: var(--primary-dark); font-size: 1.05rem; }
 .departure-card span { color: var(--muted); font-size: .78rem; }
+.departure-card .schedule-delay { margin-top: .2rem; }
 .timetable-grid {
   display: flex;
   flex-wrap: wrap;

@@ -5,6 +5,7 @@ import {
   buildMotionModel,
   decodeGtfsRealtime,
   deserializeSegmentTravelHistory,
+  describeScheduleDelay,
   estimateVehicleProgress,
   estimateSegmentTravelTime,
   fetchRealtimeVehicles,
@@ -86,6 +87,17 @@ test("車両の遅れを後続停留所へ反映する", () => {
   const estimate = estimateVehicleProgress(feed.vehicles[0], trip, routeData, "s2", nowMs);
   assert.equal(estimate.stopsAway, 1);
   assert.equal(estimate.minutes, 10);
+  assert.equal(estimate.scheduleDelay.key, "late");
+});
+
+test("推定幅全体を時刻表と比較して遅れ見込みを表示する", () => {
+  const scheduled = Date.parse("2026-07-19T01:00:00Z");
+  assert.deepEqual(describeScheduleDelay(scheduled, scheduled + 4 * 60_000, scheduled + 6 * 60_000), {
+    key: "late", label: "4〜6分遅れ見込み",
+  });
+  assert.equal(describeScheduleDelay(scheduled, scheduled - 60_000, scheduled + 60_000).key, "on-time");
+  assert.equal(describeScheduleDelay(scheduled, scheduled - 4 * 60_000, scheduled - 2 * 60_000).key, "early");
+  assert.equal(describeScheduleDelay(scheduled, scheduled - 6 * 60_000, scheduled + 6 * 60_000).key, "unknown");
 });
 
 test("選択車両の将来到着一覧を生成する", () => {

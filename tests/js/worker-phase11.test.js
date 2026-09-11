@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import {
+import worker, {
   collectSegmentEvents,
   buildCompactDailyGroups,
   chunkUniqueKeys,
@@ -56,6 +56,76 @@ test("D1検索キーは重複を除いてSQL変数上限以下へ分割する", 
   const chunks = chunkUniqueKeys(keys);
   assert.deepEqual(chunks.map((chunk) => chunk.length), [75, 75, 10]);
   assert.equal(new Set(chunks.flat()).size, 160);
+});
+
+test("推定APIはR2 currentの曜日・15分シャードをD1より優先する", async () => {
+  const at = "2026-09-08T23:07:00Z";
+  const generation = "2026-09-11T03-52-33.348Z";
+  const profile = { segment_key: "r|0|a>b", confidence: 0.8, median_seconds: 120 };
+  const bucket = memoryBucket(new Map([
+    ["profiles-v1/current.json", {
+      version: 1, format: "phase11-profile-shards", generation, generated_at: "2026-09-11T03:52:33.348Z",
+      shards: [{ day_type: "weekday", time_bin: "08:00", path: "profiles/weekday/0800.json" }],
+      weather: { path: "weather-profiles.json" },
+    }],
+    [`profiles-v1/generations/${generation}/profiles/weekday/0800.json`, {
+      version: 1, generated_at: "2026-09-11T03:52:33.348Z", profiles: [profile],
+    }],
+    [`profiles-v1/generations/${generation}/weather-profiles.json`, {
+      version: 1, generated_at: "2026-09-11T03:52:33.348Z",
+      weather_profiles: [{
+        route_id: "r", direction_id: 0, weather_class: "dry", temperature_band: "mild",
+        adjustment_ratio: 1.1, confidence: 0.8,
+      }],
+    }],
+  ]));
+  const db = {
+    prepare(sql) {
+      return {
+        bind() { return this; },
+        async all() { return { results: [] }; },
+        async first() {
+          return sql.includes("weather_current") ? {
+            observed_at: at, weather_class: "dry", temperature_band: "mild",
+            temperature_c: 24, precipitation_mm: 0, weather_code: 1,
+          } : null;
+        },
+      };
+    },
+  };
+  const response = await worker.fetch(new Request("https://worker.example/api/v1/estimates", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ at, segments: [{ segment_key: profile.segment_key, route_id: "r", direction_id: 0 }] }),
+  }), { EVENT_BUCKET: bucket, DB: db }, {});
+  const body = await response.json();
+  assert.equal(body.sources.profiles, "r2-json");
+  assert.equal(body.sources.weather_profiles, "r2-json");
+  assert.equal(body.profile_generation, generation);
+  assert.equal(body.estimates[0].profile.confidence, 0.8);
+  assert.equal(body.estimates[0].weather.adjustment_ratio, 1.1);
+});
+
+test("R2 currentが読めない場合は推定APIがD1へフォールバックする", async () => {
+  const profile = { segment_key: "r|0|a>b", confidence: 0.7, median_seconds: 130 };
+  const db = {
+    prepare(sql) {
+      return {
+        bind() { return this; },
+        async all() {
+          if (sql.includes("FROM profiles")) return { results: [profile] };
+          return { results: [] };
+        },
+        async first() { return null; },
+      };
+    },
+  };
+  const response = await worker.fetch(new Request("https://worker.example/api/v1/estimates", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ at: "2026-09-08T23:07:00Z", segments: [{ segment_key: profile.segment_key }] }),
+  }), { EVENT_BUCKET: memoryBucket(new Map()), DB: db }, {});
+  const body = await response.json();
+  assert.equal(body.sources.profiles, "d1");
+  assert.equal(body.estimates[0].profile.median_seconds, 130);
 });
 
 test("降水・降雪と気温を学習用カテゴリへ分類する", () => {
