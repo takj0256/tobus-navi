@@ -75,7 +75,16 @@ const manifestPayload = `${JSON.stringify(manifest, null, 2)}\n`;
 await writeFile(resolve(generationDir, "manifest.json"), manifestPayload);
 await mkdir(outputDir, { recursive: true });
 await writeFile(resolve(outputDir, "current.json"), manifestPayload);
-console.log(JSON.stringify({ outputDir: generationDir, ...manifest }, null, 2));
+console.log(JSON.stringify({
+  outputDir: generationDir,
+  generation: manifest.generation,
+  generated_at: manifest.generated_at,
+  source_objects: manifest.source_objects,
+  source_dates: manifest.source_dates,
+  profiles: manifest.profiles,
+  weather_profiles: manifest.weather_profiles,
+  shard_count: manifest.shards.length,
+}, null, 2));
 
 function summarize(rows) {
   const confidences = rows.map((row) => Number(row.confidence)).filter(Number.isFinite);

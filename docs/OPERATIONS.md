@@ -58,6 +58,8 @@ manifestには入力日、件数、平均・最大信頼度、最大sample_count
 
 04:15の`tools/run_phase11_local_aggregation.sh`は、直近28日の取得とJSON生成後、`tools/publish_phase11_json_to_r2.mjs`でR2の`profiles-v1/generations/<生成ID>/`へ公開する。各シャードのサイズとSHA-256をローカル検証し、世代manifestのアップロードと再読込が成功した後に限り、`profiles-v1/current.json`を最後に更新する。途中失敗ではcurrentを切り替えず、旧generationも自動削除しない。この経路はD1へ書き込まない。
 
+R2公開は既定3並列。ネットワーク例外と一時HTTPエラー（408、425、429、5xx）は、各要求の120秒タイムアウトと最大8回の指数バックオフで再試行する。401等の恒久4xxは再試行しない。必要時は`PHASE11_R2_CONCURRENCY`で1～12の範囲に調整できるが、接続不安定時にむやみに増やさない。
+
 点検時は`profiles-v1/current.json`の`generated_at`、`source_dates`、件数・信頼度統計を日次成功の一次根拠にする。D1の`job_status`は旧方式の最終実行記録として扱い、新しい当日成功の根拠にしない。Workerは現時点で引き続きD1を参照するため、R2公開の成功と本番利用開始を区別する。
 
 WorkerのR2参照切替は未実施。切替前にR2障害時のD1フォールバック、キャッシュと読取回数、最大シャードサイズを検証し、別途デプロイする。

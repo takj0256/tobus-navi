@@ -61,9 +61,22 @@ test("Phase 11 JSON publication validates objects and switches current last", as
 
   const stored = new Map();
   const writes = [];
+  let transientFailures = 1;
+  let permanentFailure = false;
+  let requestCount = 0;
   const server = http.createServer(async (request, response) => {
     const key = request.url.slice(1);
     if (request.method === "PUT") {
+      requestCount += 1;
+      if (permanentFailure) {
+        response.writeHead(401).end("not authorized");
+        return;
+      }
+      if (transientFailures > 0) {
+        transientFailures -= 1;
+        response.writeHead(503).end("temporary failure");
+        return;
+      }
       const chunks = [];
       for await (const chunk of request) chunks.push(chunk);
       stored.set(key, Buffer.concat(chunks));
@@ -83,6 +96,8 @@ test("Phase 11 JSON publication validates objects and switches current last", as
   const result = await publishPhase11Json(output, {
     token: "test-token", bucket: "test-bucket", prefix: "profiles-v1",
     apiBase: `http://127.0.0.1:${address.port}`,
+    concurrency: 1,
+    retryBaseDelayMs: 1,
   });
 
   assert.equal(result.sourceObjects, 1);
@@ -90,6 +105,17 @@ test("Phase 11 JSON publication validates objects and switches current last", as
   assert.equal(writes.at(-1), "profiles-v1/current.json");
   assert.ok(writes.at(-2).endsWith("/manifest.json"));
   assert.equal(writes.some((key) => key.includes("profiles-v1/generations/")), true);
+  assert.equal(requestCount, writes.length + 1);
+
+  permanentFailure = true;
+  const requestsBeforeUnauthorized = requestCount;
+  await assert.rejects(publishPhase11Json(output, {
+    token: "test-token", bucket: "test-bucket", prefix: "profiles-v2",
+    apiBase: `http://127.0.0.1:${address.port}`,
+    concurrency: 1,
+    retryBaseDelayMs: 1,
+  }), /401/);
+  assert.equal(requestCount, requestsBeforeUnauthorized + 1);
 });
 
 test("scheduled Phase 11 runner has no D1 write path", async () => {
