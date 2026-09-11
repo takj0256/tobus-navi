@@ -62,7 +62,7 @@ R2公開は既定3並列。ネットワーク例外と一時HTTPエラー（408�
 
 点検時は`profiles-v1/current.json`の`generated_at`、`source_dates`、件数・信頼度統計を日次成功の一次根拠にする。D1の`job_status`は旧方式の最終実行記録として扱い、新しい当日成功の根拠にしない。R2公開の成功、Workerコードの実装、Workerデプロイ、本番APIでの利用開始を区別する。
 
-WorkerのR2参照コードは実装済みだが本番未デプロイ。`profiles-v1/current.json`を5分、選択した世代内シャードとweather JSONを24時間キャッシュし、同一isolate内では最大8 JSONを再利用する。current・generation・generated_at・シャードパス・JSON形式の検証に失敗した場合だけD1へフォールバックする。補正と現在天気はD1を継続利用する。
+WorkerのR2参照コードは2026-09-11に本番反映済み。`profiles-v1/current.json`を5分、選択した世代内シャードとweather JSONを24時間キャッシュし、同一isolate内では最大8 JSONを再利用する。current・generation・generated_at・シャードパス・JSON形式の検証に失敗した場合だけD1へフォールバックする。補正と現在天気はD1を継続利用する。
 
 本番反映時はWorkerを先にデプロイし、`/api/v1/estimates`で次を確認する。
 
