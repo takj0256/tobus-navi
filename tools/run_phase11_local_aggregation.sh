@@ -27,8 +27,31 @@ trap mark_failed ERR
 yesterday_key="$(TZ=Asia/Tokyo date -d '1 day ago' +%F)"
 probe_file="$work_dir/yesterday.json"
 current_step="ensuring yesterday daily-v2"
-if ! "${wrangler[@]}" r2 object get "tobus-phase11-events/daily-v2/$yesterday_key.json" \
-    --remote --file "$probe_file" --config "$project_dir/worker/wrangler.toml" >/dev/null 2>&1; then
+probe_log="$work_dir/yesterday-probe.log"
+probe_state="error"
+for attempt in $(seq 1 5); do
+  if "${wrangler[@]}" r2 object get "tobus-phase11-events/daily-v2/$yesterday_key.json" \
+      --remote --file "$probe_file" --config "$project_dir/worker/wrangler.toml" >"$probe_log" 2>&1; then
+    probe_state="found"
+    break
+  fi
+  rm -f "$probe_file"
+  if grep -q "The specified key does not exist" "$probe_log"; then
+    probe_state="missing"
+    break
+  fi
+  if (( attempt < 5 )); then
+    delay=$((2 ** (attempt - 1)))
+    printf 'R2 yesterday probe failed; retry %d/5 in %ds\n' "$((attempt + 1))" "$delay" >&2
+    sleep "$delay"
+  fi
+done
+if [[ "$probe_state" == "error" ]]; then
+  cat "$probe_log" >&2
+  echo "R2の昨日分確認が認証または通信エラーで失敗しました。欠損とは判定せず中止します。" >&2
+  false
+fi
+if [[ "$probe_state" == "missing" ]]; then
   rm -f "$probe_file"
   node "$project_dir/tools/recover_phase11_daily_from_r2.mjs" "$yesterday_key"
 fi

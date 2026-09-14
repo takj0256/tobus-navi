@@ -9,6 +9,8 @@ import { buildCompactDailyGroups } from "../worker/worker.js";
 const ACCOUNT_ID = process.env.CLOUDFLARE_ACCOUNT_ID || "280d634e84421957ce4f72c88ae47051";
 const BUCKET = process.env.PHASE11_R2_BUCKET || "tobus-phase11-events";
 const API_BASE = `https://api.cloudflare.com/client/v4/accounts/${ACCOUNT_ID}/r2/buckets/${BUCKET}/objects`;
+const RETRYABLE_STATUS = new Set([408, 425, 429, 500, 502, 503, 504]);
+const REQUEST_POLICY = { attempts: 8, baseDelayMs: 1000, timeoutMs: 120_000 };
 const dateKey = process.argv[2];
 if (!/^\d{4}-\d{2}-\d{2}$/.test(dateKey || "")) {
   throw new Error("usage: recover_phase11_daily_from_r2.mjs YYYY-MM-DD");
@@ -34,13 +36,40 @@ async function oauthToken() {
 const token = await oauthToken();
 
 async function api(url, options = {}, allowMissing = false) {
-  const response = await fetch(url, {
+  return fetchWithRetry(url, {
     ...options,
     headers: { Authorization: `Bearer ${token}`, ...(options.headers || {}) },
-  });
-  if (allowMissing && response.status === 404) return null;
-  if (!response.ok) throw new Error(`Cloudflare R2 HTTP ${response.status}: ${(await response.text()).slice(0, 300)}`);
-  return response;
+  }, `${options.method || "GET"} ${new URL(url).pathname}`, { ...REQUEST_POLICY, allowMissing });
+}
+
+async function fetchWithRetry(url, init, label, policy) {
+  let lastError;
+  for (let attempt = 1; attempt <= policy.attempts; attempt += 1) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), policy.timeoutMs);
+    timeout.unref?.();
+    try {
+      const response = await fetch(url, { ...init, signal: controller.signal });
+      if (response.ok) return response;
+      if (policy.allowMissing && response.status === 404) return null;
+      const body = (await response.text()).slice(0, 300);
+      const error = new Error(`Cloudflare R2 HTTP ${response.status}: ${body}`);
+      error.retryable = RETRYABLE_STATUS.has(response.status);
+      if (!error.retryable || attempt === policy.attempts) throw error;
+      lastError = error;
+    } catch (error) {
+      if (error.retryable === false || attempt === policy.attempts) {
+        throw new Error(`${label} failed after ${attempt} attempt(s): ${error.message}`, { cause: error });
+      }
+      lastError = error;
+    } finally {
+      clearTimeout(timeout);
+    }
+    const delayMs = Math.min(policy.baseDelayMs * (2 ** (attempt - 1)), 30_000);
+    process.stderr.write(`${label}: retry ${attempt + 1}/${policy.attempts} in ${delayMs}ms (${lastError.message})\n`);
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, delayMs));
+  }
+  throw lastError;
 }
 
 async function listObjects(prefix) {

@@ -1,6 +1,18 @@
 # 現在の状態・次の作業
 
-更新日：2026-09-11 JST。ここは運用の引継ぎ。古い [IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md) は機能履歴で、現在の稼働証明ではない。
+更新日：2026-09-14 JST。ここは運用の引継ぎ。古い [IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md) は機能履歴で、現在の稼働証明ではない。
+
+## 2026-09-14 欠損復元・再集計・認証障害対策
+
+- 担当ホスト：サブPC `MSI`。ブランチ：`work/phase11-recovery-hardening`。
+- 04:15 JSTの自動集計は、Wrangler OAuth更新時の`dash.cloudflare.com:443`接続タイムアウト後、復元スクリプトが期限切れトークンでR2へ接続してHTTP 401となり、昨日分確認の段階で失敗した。Cloudflare上限、WSL停止、ロック保持は原因ではない。
+- 欠損していた`daily-v2/2026-09-13.json`を元の14オブジェクトから復元し、98,038 unique events、85,325 groups、98,036 samplesを保存・再読込検証した。
+- 2026-08-17〜09-13の28日分を再集計し、generation `2026-09-14T04-08-16.711Z`、304,863 profiles、1,314 weather profiles、221シャードをR2へ公開した。224オブジェクトの公開とcurrent切替が成功し、D1書き込みは行っていない。
+- 28日分の日次JSONは日付・version 2・非空サンプル・グループキー重複なしを確認した。R2に元オブジェクトが残る2026-08-22〜09-13は`source_keys`と実在キーが一致し、未収録の実在キーは0。2026-08-17〜21は元オブジェクトが保持期間外のため内容再構築までは未確認だが、日次JSON自体は正常だった。
+- 昨日分のR2確認で404だけを欠損と扱い、認証・通信エラーは最大5回再試行後に欠損と断定せず停止するよう修正した。復元処理のR2 APIにもネットワーク例外と一時HTTPエラーの再試行を追加し、集計用コピーへ反映・一致確認した。
+- 検証：`bash -n`、復元スクリプトの`node --check`、`npm run check:js`、`npm run test:js`（95件成功）、R2 currentと世代manifestの完全一致。本番`/api/v1/estimates`が同generationをprofiles/weatherとも`r2-json`で参照し、ロック解放済みであることを確認した。
+
+次の一手：次回04:15の非対話実行でOAuth更新を含む定刻成功を確認する。8月17〜21日の元オブジェクトは保持期間外なので、日次JSON以上の再構築検証はできない状態として扱う。
 
 ## 2026-09-11 Worker R2参照・遅延見込み表示の本番反映
 
