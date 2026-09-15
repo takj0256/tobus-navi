@@ -61,14 +61,30 @@ has_yesterday=0
 current_step="downloading daily-v2 objects"
 for days_ago in $(seq 1 28); do
   date_key="$(TZ=Asia/Tokyo date -d "$days_ago days ago" +%F)"
-  if "${wrangler[@]}" r2 object get "tobus-phase11-events/daily-v2/$date_key.json" \
-      --remote --file "$data_dir/$date_key.json" --config "$project_dir/worker/wrangler.toml" >/dev/null 2>&1; then
-    downloaded=$((downloaded + 1))
-    if (( days_ago == 1 )); then has_yesterday=1; fi
-    printf 'downloaded daily-v2/%s.json\n' "$date_key"
-  else
+  fetched=0
+  download_log="$work_dir/download.log"
+  for attempt in $(seq 1 5); do
+    if "${wrangler[@]}" r2 object get "tobus-phase11-events/daily-v2/$date_key.json" \
+        --remote --file "$data_dir/$date_key.json" --config "$project_dir/worker/wrangler.toml" >"$download_log" 2>&1; then
+      fetched=1
+      break
+    fi
     rm -f "$data_dir/$date_key.json"
+    if grep -q "The specified key does not exist" "$download_log"; then break; fi
+    if (( attempt < 5 )); then
+      delay=$((2 ** (attempt - 1)))
+      printf 'R2 daily-v2/%s download failed; retry %d/5 in %ds\n' "$date_key" "$((attempt + 1))" "$delay" >&2
+      sleep "$delay"
+    fi
+  done
+  if (( fetched == 0 )); then
+    cat "$download_log" >&2
+    echo "daily-v2/$date_key.jsonを取得できないため、不完全な28日集計を公開せず中止します。" >&2
+    false
   fi
+  downloaded=$((downloaded + 1))
+  if (( days_ago == 1 )); then has_yesterday=1; fi
+  printf 'downloaded daily-v2/%s.json\n' "$date_key"
 done
 if (( downloaded == 0 )); then
   echo "R2からdaily-v2を取得できませんでした。Wranglerログインとバケットを確認してください。" >&2
