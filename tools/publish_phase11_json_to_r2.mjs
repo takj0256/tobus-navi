@@ -27,6 +27,7 @@ export async function publishPhase11Json(outputDir, options = {}) {
   };
   const currentPayload = await fs.readFile(path.resolve(outputDir, "current.json"));
   const manifest = JSON.parse(currentPayload.toString("utf8"));
+  if (manifest.candidate_only) throw new Error('History candidate has not passed production validation; publication denied');
   if (manifest.format !== "phase11-profile-shards" || !manifest.generation) {
     throw new Error("current.json is not a Phase 11 profile manifest");
   }

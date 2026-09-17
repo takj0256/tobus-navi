@@ -96,6 +96,10 @@ if (( has_yesterday == 0 )); then
 fi
 
 output_dir="$work_dir/profiles-json"
+if [[ -n "${PHASE11_HISTORY_DIR:-}" ]]; then
+  current_step="archiving daily observation history"
+  node "$project_dir/tools/archive_phase11_history.mjs" "${PHASE11_HISTORY_MODE:-local}" "$data_dir" "$PHASE11_HISTORY_DIR"
+fi
 current_step="calculating profile JSON"
 node --max-old-space-size=4096 "$project_dir/tools/aggregate_phase11_json.mjs" "$data_dir" "$output_dir"
 current_step="publishing profile JSON to R2"

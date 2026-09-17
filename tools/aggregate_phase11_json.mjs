@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { basename, resolve } from "node:path";
 import { buildLocalProfiles } from "./phase11-local-model.js";
+import { buildHistoryProfiles } from "./phase11-history-model.js";
 
 const [inputDir, outputDir] = process.argv.slice(2);
 if (!inputDir || !outputDir) {
@@ -17,7 +18,8 @@ const payloads = [];
 for (const file of files) payloads.push(JSON.parse(await readFile(resolve(inputDir, file), "utf8")));
 
 const generatedAt = new Date();
-const result = buildLocalProfiles(payloads, generatedAt.getTime());
+const historyMode = process.env.PHASE11_HISTORY_CANDIDATE === '1';
+const result = historyMode ? buildHistoryProfiles(payloads, generatedAt.getTime()) : buildLocalProfiles(payloads, generatedAt.getTime());
 if (!result.profiles.length) throw new Error("プロファイルが0件のためJSONを生成できません");
 
 const generation = generatedAt.toISOString().replaceAll(":", "-");
@@ -60,6 +62,7 @@ const manifest = {
   generation,
   generated_at: generatedAt.toISOString(),
   source_objects: result.sourceObjects,
+  ...(historyMode ? { candidate_only: true, strategy: result.strategy, limitations: result.limitations } : {}),
   source_dates: files.map((file) => basename(file, ".json")),
   profiles: summarize(result.profiles),
   weather_profiles: summarize(result.weatherProfiles),
