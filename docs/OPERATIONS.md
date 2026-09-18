@@ -25,6 +25,8 @@ Workerのデプロイ、D1のマイグレーション、集計用コピーの更
 
 ## 検証
 
+小型NNデモの学習・起動・評価手順は[PHASE11_ML_DEMO.md](PHASE11_ML_DEMO.md)。ローカルのdaily-v2を読み、新規出力フォルダーへ学習重みと静的デモを生成する。本番公開器/集計コピーへ移さない。今回の成果物はGit管理外で、ソース共有とモデル配布は別。
+
 - 文書のみ：リンク先、記述の根拠、`git diff --check`、stage内容の機密チェック。
 - JavaScriptロジック：Node 22系を基本に `npm run check:js` と `npm run test:js`。
 - Python変換処理：対象の `tests/` と既存CI手順を参照。
