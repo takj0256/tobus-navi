@@ -35,6 +35,10 @@ Workerのデプロイ、D1のマイグレーション、集計用コピーの更
 
 ## 集計と点検
 
+2026-09-21から、日次ファイルに加えてJST時間帯別の観測件数を点検する。不具合時は原因の根拠を収集して最小修正・テスト・復旧確認へ進む。Worker CPU上限超過はD1書き込み上限と別問題。`workersInvocationsAdaptive`のstatus/CPU分位値と保存時間帯を照合する。認証401が調査時に出たら通常のWrangler認証更新を行い、過去欠落の原因と混同しない。
+
+CPU暫定修正版はversion `418fcc06-66a1-4888-aa4d-ce1407141af7`。悪化時の直前版は`2988b9fd-f685-4cd4-bc9a-18ef23989944`で、Workerのrollbackを使う（R2世代を戻す操作とは別）。暫定修正版もCron全体24〜30msを実測したため、ピーク時の継続収集を未検証のまま「完治」と報告しない。[CPU障害記録](PHASE11_CPU_INCIDENT.md)参照。
+
 - 予定集計：04:15 Asia/Tokyo。サブPCのcrontabを実際に確認する。
 - 予定点検：05:00 Asia/Tokyo。現在の実行ホスト・登録状況は STATUS.md を参照する。
 - 集計は開発checkoutとは別の `tobus-phase11-batch/app` コピーを使用する構成。checkoutだけ更新してもバッチには反映されない。

@@ -133,7 +133,10 @@ export function decodeGtfsRealtime(buffer) {
       feed.timestamp = header.timestamp || 0;
     } else if (field === 2 && wire === 2) {
       const entity = parseEntity(reader.readMessage());
-      if (entity.vehicle) feed.vehicles.push({ ...entity.vehicle, entityId: entity.id });
+      if (entity.vehicle) {
+        entity.vehicle.entityId = entity.id;
+        feed.vehicles.push(entity.vehicle);
+      }
     } else {
       reader.skip(wire);
     }
@@ -887,13 +890,25 @@ class ProtoReader {
   }
 
   readVarint() {
-    let result = 0n;
-    let shift = 0n;
-    for (let count = 0; count < 10; count += 1) {
+    // Tags/lengths/timestamps overwhelmingly fit in 49 bits. Avoid allocating
+    // BigInts for every byte of every vehicle on the CPU-limited collector.
+    let result = 0;
+    let factor = 1;
+    for (let count = 0; count < 7; count += 1) {
       if (this.eof()) throw new Error("GTFS-RTのvarintが途中で終了しました。");
       const byte = this.bytes[this.position++];
-      result |= BigInt(byte & 0x7f) << shift;
-      if ((byte & 0x80) === 0) return Number(result);
+      result += (byte & 0x7f) * factor;
+      if ((byte & 0x80) === 0) return result;
+      factor *= 128;
+    }
+    // Preserve the old uint64-to-Number rounding for rare large values.
+    let wide = BigInt(result);
+    let shift = 49n;
+    for (let count = 7; count < 10; count += 1) {
+      if (this.eof()) throw new Error("GTFS-RTのvarintが途中で終了しました。");
+      const byte = this.bytes[this.position++];
+      wide |= BigInt(byte & 0x7f) << shift;
+      if ((byte & 0x80) === 0) return Number(wide);
       shift += 7n;
     }
     throw new Error("GTFS-RTのvarintが長すぎます。");

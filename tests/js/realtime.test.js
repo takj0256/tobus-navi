@@ -64,6 +64,22 @@ const routeData = {
   },
   services: { calendars: {}, exceptions: {} },
 };
+
+test("高速varintが1〜10バイトとuint64の丸め互換性を保つ", () => {
+  for (const value of [0n, 127n, 128n, 16383n, 16384n, 2n ** 32n, 2n ** 49n - 1n,
+    2n ** 49n, 2n ** 53n - 1n, 2n ** 53n + 1n, 2n ** 64n - 1n]) {
+    const bytes = new Uint8Array(fieldMessage(1, fieldVarint(3, value)));
+    assert.equal(decodeGtfsRealtime(bytes.buffer).timestamp, Number(value));
+  }
+});
+
+test("高速varintも切断・過長・不正メッセージ長を拒否する", () => {
+  for (const payload of [[0x18, 0x80], [0x18, ...Array(7).fill(0x80)],
+    [0x18, ...Array(10).fill(0x80)]]) {
+    assert.throws(() => decodeGtfsRealtime(new Uint8Array(fieldMessage(1, payload)).buffer), /varint/);
+  }
+  assert.throws(() => decodeGtfsRealtime(new Uint8Array([0x0a, 0x7f]).buffer), /メッセージ長/);
+});
 const trip = {
   trip_id: "t1",
   service_id: "svc",
