@@ -155,6 +155,27 @@ test("Open-Meteo現在値を正規化する", async () => {
   assert.equal(weather.temperature_c, 31);
 });
 
+test("天気取得とD1保存が成功した場合だけ古い天気エラーを消す", async () => {
+  for (const failure of [null, "weather", "database"]) {
+    const bucket = memoryBucket(new Map([["state/latest.json", {
+      vehicles: {}, candidates: [], weather_error: "old timeout",
+    }]]));
+    const env = {
+      EVENT_BUCKET: bucket, R2_MAINTENANCE_ENABLED: "false",
+      DB: { prepare() { return { bind() { return { async run() {
+        if (failure === "database") throw new Error("D1 failed");
+      } }; } }; } },
+    };
+    await runScheduledCollection(env, new Date("2026-09-22T00:00:00Z"), async (url) => {
+      if (!url.includes("open-meteo")) return new Response(new Uint8Array());
+      if (failure === "weather") throw new Error("weather failed");
+      return Response.json({ current: { temperature_2m: 25 } });
+    });
+    const state = bucket.values.get("state/latest.json");
+    assert.equal(state.weather_error, failure === "weather" ? "weather failed" : failure === "database" ? "D1 failed" : undefined);
+  }
+});
+
 test("完了した東京日付を1日ずつ日次R2オブジェクトへ圧縮する", async () => {
   const bucket = memoryBucket(new Map([
     ["hourly/2026-08-07/14.json", { events: [{ id: "d7" }] }], // 8/7 23:00 JST

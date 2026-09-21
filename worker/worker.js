@@ -71,6 +71,7 @@ export async function runScheduledCollection(env, now = new Date(), fetchImpl = 
       try {
         state.weather = await fetchCurrentWeather(env, now, fetchImpl);
         if (env.DB) await storeCurrentWeather(env.DB, state.weather);
+        delete state.weather_error;
       } catch (error) {
         state.weather_error = String(error?.message || error).slice(0, 180);
       }
