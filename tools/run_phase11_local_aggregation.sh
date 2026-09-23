@@ -25,6 +25,14 @@ trap mark_failed ERR
 # 大きな日次JSONの生成はCloudflare WorkerのCPU上限を避けるため、このPCで行う。
 # 既に昨日分がある場合は何も変更せず、欠損時だけhourly/eventsから復元する。
 yesterday_key="$(TZ=Asia/Tokyo date -d '1 day ago' +%F)"
+if [[ -n "${PHASE11_RAW_DIR:-}" ]]; then
+  current_step="draining raw capture before daily publication"
+  "${wrangler[@]}" whoami >/dev/null
+  (
+    flock -w 1800 8
+    node "$project_dir/tools/process_phase11_raw.mjs" "$PHASE11_RAW_DIR" --through "$yesterday_key"
+  ) 8>"$(dirname "$PHASE11_RAW_DIR")/raw-processor.lock"
+fi
 probe_file="$work_dir/yesterday.json"
 current_step="ensuring yesterday daily-v2"
 probe_log="$work_dir/yesterday-probe.log"

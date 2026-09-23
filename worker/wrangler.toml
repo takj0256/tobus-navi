@@ -17,6 +17,7 @@ binding = "EVENT_BUCKET"
 bucket_name = "tobus-phase11-events"
 
 [vars]
+COLLECTION_MODE = "raw-v1"
 TRAFFIC_MONTHLY_LIMIT = "20000"
 TRAFFIC_STOP_RATIO = "0.95"
 TRAFFIC_SOFT_RATIO = "0.80"

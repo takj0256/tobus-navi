@@ -1,0 +1,16 @@
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import { cloudflareClient, readJson } from './phase11-storage.mjs';
+import { rawTimestamp } from './process_phase11_raw.mjs';
+const root = process.argv[2];
+if (!root) throw Error('usage: activate_phase11_raw.mjs PROCESSOR_ROOT');
+const config = await readJson(path.join(root, 'pending-config.json'));
+const client = await cloudflareClient();
+const objects = (await client.list('raw-v1/')).sort((a,b)=>a.key.localeCompare(b.key));
+if (!objects.length) throw Error('No actual raw capture yet; not activated');
+const first = objects[0];
+if (Date.now() - rawTimestamp(first.key) > 3600000) throw Error('Initial raw older than one hour; inspect before activation');
+await client.get(first.key);
+config.start_at = new Date(rawTimestamp(first.key)).toISOString();
+await fs.writeFile(path.join(root, 'config.json'), JSON.stringify(config), { flag: 'wx', mode: 0o600 });
+console.log(JSON.stringify({ activated: true, start_at: config.start_at, first_raw: first.key }));

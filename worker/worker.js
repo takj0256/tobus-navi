@@ -33,6 +33,8 @@ export default {
     if (request.method === "OPTIONS") return new Response(null, { headers: corsHeaders(env) });
     const url = new URL(request.url);
 
+    if (url.pathname === "/internal/phase11/traffic") return handleInternalTraffic(request, env);
+
     if (url.pathname === "/health") {
       return jsonResponse({ ok: true, phase11: Boolean(env.DB || env.EVENT_BUCKET) }, 200, env);
     }
@@ -59,6 +61,7 @@ export default {
 
 export async function runScheduledCollection(env, now = new Date(), fetchImpl = fetch) {
   if (!env.EVENT_BUCKET) return { enabled: false, events: 0 };
+  if (env.COLLECTION_MODE === "raw-v1") return captureRawFeed(env, now, fetchImpl);
   let events = [];
   let collectionError = null;
   try {
@@ -69,7 +72,7 @@ export async function runScheduledCollection(env, now = new Date(), fetchImpl = 
     if (weatherRefreshDue(state, env, now)) {
       state.weather_attempted_at = now.toISOString();
       try {
-        state.weather = await fetchCurrentWeather(env, now, fetchImpl);
+        state.weather = await fetchCurrentWeather(env, env.WEATHER_FETCH_AT ? new Date(env.WEATHER_FETCH_AT) : now, fetchImpl);
         if (env.DB) await storeCurrentWeather(env.DB, state.weather);
         delete state.weather_error;
       } catch (error) {
@@ -130,6 +133,24 @@ export async function runScheduledCollection(env, now = new Date(), fetchImpl = 
     remainingLegacyDays: legacyUpgrade.remainingLegacyDays,
     remainingCompletedDays: dailyCompaction.remainingCompletedDays,
   };
+}
+
+// Capture succeeds independently of decoding, D1, weather and compaction.
+// First successful delivery for a scheduled minute wins; retries cannot replace it.
+export async function captureRawFeed(env, now, fetchImpl = fetch) {
+  const response = await fetchWithTimeout(SOURCE, UPSTREAM_TIMEOUT_MS, fetchImpl);
+  if (!response.ok) throw new Error(`ODPT upstream HTTP ${response.status}`);
+  const bytes = await response.arrayBuffer();
+  if (!bytes.byteLength || bytes.byteLength > 512 * 1024) throw new Error("Raw feed size outside 1..524288 bytes");
+  const minute = new Date(Math.floor(now.getTime() / 60000) * 60000).toISOString();
+  const key = `raw-v1/${minute.slice(0, 10)}/${minute.slice(11, 13)}/${minute.slice(14, 16)}.pb`;
+  const saved = await env.EVENT_BUCKET.put(key, bytes, {
+    onlyIf: { etagDoesNotMatch: "*" },
+    httpMetadata: { contentType: "application/x-protobuf" },
+    customMetadata: { scheduled_at: now.toISOString(), captured_at: new Date().toISOString(), format: "gtfs-rt-v1" },
+  });
+  console.log(JSON.stringify({ phase11_raw: true, key, bytes: bytes.byteLength, duplicate: saved === null }));
+  return { enabled: true, raw: true, key, bytes: bytes.byteLength, duplicate: saved === null };
 }
 
 export function collectSegmentEvents(feed, state, nowMs = Date.now()) {
@@ -229,7 +250,8 @@ async function processAnomalies(events, state, env, now, fetchImpl) {
       confirmation.confirmed ? 1 : 0, confirmation.reason,
     ).run();
     if (confirmation.confirmed && !cachedTraffic) {
-      await queryAndStoreTraffic(event, anomaly, env, now, fetchImpl);
+      if (env.QUERY_TRAFFIC) await env.QUERY_TRAFFIC(event, anomaly, now);
+      else await queryAndStoreTraffic(event, anomaly, env, now, fetchImpl);
     }
   }
 }
@@ -380,6 +402,37 @@ async function queryAndStoreTraffic(event, anomaly, env, now, fetchImpl) {
   ).run();
   await writeTrafficCache(event.segment_key, normalized, env);
   return normalized;
+}
+
+// Only the PC processor may request an already-confirmed, fresh traffic check.
+// The provider secret remains on Cloudflare; raw capture never calls this path.
+async function handleInternalTraffic(request, env) {
+  if (request.method !== "POST" || !env.PHASE11_PROCESSOR_TOKEN) return new Response("Not Found", { status: 404 });
+  const supplied = request.headers.get("Authorization") || "";
+  if (supplied.length > 200) return new Response("Unauthorized", { status: 401 });
+  const encoder = new TextEncoder();
+  const [a, b] = await Promise.all([supplied, `Bearer ${env.PHASE11_PROCESSOR_TOKEN}`].map(s => crypto.subtle.digest("SHA-256", encoder.encode(s))));
+  let mismatch = 0;
+  const aa = new Uint8Array(a), bb = new Uint8Array(b);
+  for (let i = 0; i < aa.length; i++) mismatch |= aa[i] ^ bb[i];
+  if (mismatch) return new Response("Unauthorized", { status: 401 });
+  const text = await request.text();
+  if (text.length > 4096) return new Response("Too large", { status: 413 });
+  let body;
+  try { body = JSON.parse(text); } catch { return new Response("Invalid JSON", { status: 400 }); }
+  if (!body || typeof body !== "object") return new Response("Invalid JSON object", { status: 400 });
+  const { event, anomaly } = body;
+  const age = Date.now() - Number(event?.timestamp_ms);
+  if (!event?.segment_key || typeof event.segment_key !== "string" || event.segment_key.length > 200
+    || !Number.isFinite(age) || age < -30000 || age > 300000
+    || !Number.isFinite(event.latitude) || Math.abs(event.latitude) > 90
+    || !Number.isFinite(event.longitude) || Math.abs(event.longitude) > 180
+    || !Number.isFinite(anomaly?.ratio) || anomaly.ratio <= 0) return new Response("Invalid or stale event", { status: 400 });
+  const now = new Date();
+  const cached = await readTrafficCache(event.segment_key, env, now.getTime());
+  if (cached) return Response.json({ cached: true });
+  const result = await queryAndStoreTraffic(event, anomaly, env, now, fetch);
+  return Response.json({ updated: Boolean(result) });
 }
 
 async function handleEstimateBatch(request, env) {

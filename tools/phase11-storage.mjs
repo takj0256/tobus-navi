@@ -54,6 +54,18 @@ export async function cloudflareClient() {
   let retentionChecked = false;
   return {
     identity: { account, bucket, database },
+    async ingestPut(key, data) {
+      if (!/^(events\/\d{4}-\d{2}-\d{2}\/\d{2}\/[A-Za-z0-9.-]+\.json|hourly\/\d{4}-\d{2}-\d{2}\/\d{2}\.json|state\/processor-v1\.json)$/.test(key)) throw Error('Ingest write prefix denied');
+      await request(`${objectRoot}/${key}`, { method: 'PUT', body: data, headers: { 'Content-Type': 'application/json' } });
+      if (sha256(await this.get(key)) !== sha256(data)) throw Error(`Ingest verification mismatch: ${key}`);
+    },
+    async operationalQuery(sql, params = []) {
+      // The ingestion adapter cannot write profiles or issue schema/deletion statements.
+      if (!/^\s*(SELECT\b[\s\S]*\bFROM\s+(corrections|traffic_usage|weather_current)\b|INSERT INTO\s+(anomalies|weather_current)\b)/i.test(sql) || /;/.test(sql)) throw Error('Operational SQL denied');
+      const result = JSON.parse(await request(`/d1/database/${database}/query`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sql, params }) }, false));
+      if (!result.success || !result.result?.every(item => item.success)) throw Error('D1 operational query failed');
+      return result.result;
+    },
     get: key => request(`${objectRoot}/${key}`),
     async list(prefix) {
       const entries = [];

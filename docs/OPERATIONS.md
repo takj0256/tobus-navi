@@ -35,6 +35,8 @@ Workerのデプロイ、D1のマイグレーション、集計用コピーの更
 
 ## 集計と点検
 
+未加工入力先行保存へ切り替えた環境では[PHASE11_RAW_INGEST.md](PHASE11_RAW_INGEST.md)を優先する。Worker raw、PC処理、時間別、日次、統計公開を別々に点検し、旧state/latest.jsonを最新収集状態と誤認しない。PC専用タスクは2分間隔、04:15前には処理待ちを検査する。
+
 2026-09-22のWorker版は`7d44d902-7ce2-4d6f-bb43-9d3b26d68204`。天気取得とD1保存が成功したとき古いweather_errorを解除する。従来版のエラー文字列だけで現在の失敗を断定せず、weather.fetched_at・weather_attempted_at・D1 observed_atを突き合わせる。この変更だけを戻す場合はWorkerを`418fcc06-66a1-4888-aa4d-ce1407141af7`へrollbackする。CPU軽量化と統計世代は維持する。
 
 2026-09-21から、日次ファイルに加えてJST時間帯別の観測件数を点検する。不具合時は原因の根拠を収集して最小修正・テスト・復旧確認へ進む。Worker CPU上限超過はD1書き込み上限と別問題。`workersInvocationsAdaptive`のstatus/CPU分位値と保存時間帯を照合する。認証401が調査時に出たら通常のWrangler認証更新を行い、過去欠落の原因と混同しない。
