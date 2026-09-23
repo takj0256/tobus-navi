@@ -2,6 +2,31 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import { fileURLToPath } from 'node:url';
+
+// Recover only rejected reads near OAuth expiry, never replay uncertain writes.
+export async function recoverExpiredOAuth({ status, method, credential, now = Date.now(), refresh, reload, wait = ms => new Promise(resolve => setTimeout(resolve, ms)) }) {
+  const expires = Date.parse(credential?.expires || '');
+  if (status !== 401 || method !== 'GET' || !credential?.oauth || !Number.isFinite(expires) || expires - now > 30000) return null;
+  if (expires >= now) await wait(expires - now + 1000);
+  await refresh();
+  const next = await reload();
+  return next?.token && next.token !== credential.token ? next : null;
+}
+
+async function readCredential() {
+  if (process.env.CLOUDFLARE_API_TOKEN) return { token: process.env.CLOUDFLARE_API_TOKEN, oauth: false };
+  for (const name of ['.wrangler/config/default.toml', '.config/.wrangler/config/default.toml']) {
+    try {
+      const text = await fs.readFile(path.join(os.homedir(), name), 'utf8');
+      const token = /^oauth_token\s*=\s*"([^"]+)"/m.exec(text)?.[1];
+      if (token) return { token, oauth: true, expires: /^expiration_time\s*=\s*"([^"]+)"/m.exec(text)?.[1] };
+    } catch (error) { if (error.code !== 'ENOENT') throw error; }
+  }
+  throw Error('Cloudflare credentials unavailable; run wrangler whoami first');
+}
 
 export const sha256 = data => createHash('sha256').update(data).digest('hex');
 export async function readJson(file, fallback) {
@@ -22,21 +47,27 @@ export async function withDirectoryLock(root, fn) {
   try { return await fn(); } finally { await fs.rmdir(lock); }
 }
 export async function cloudflareClient() {
-  let token = process.env.CLOUDFLARE_API_TOKEN;
-  for (const name of ['.wrangler/config/default.toml', '.config/.wrangler/config/default.toml']) {
-    if (token) break;
-    try { token = /^oauth_token\s*=\s*"([^"]+)"/m.exec(await fs.readFile(path.join(os.homedir(), name), 'utf8'))?.[1]; }
-    catch (error) { if (error.code !== 'ENOENT') throw error; }
-  }
-  if (!token) throw Error('Cloudflare credentials unavailable; run wrangler whoami first');
+  let credential = await readCredential();
   const account = process.env.CLOUDFLARE_ACCOUNT_ID || '280d634e84421957ce4f72c88ae47051';
   const bucket = process.env.PHASE11_R2_BUCKET || 'tobus-phase11-events';
   const database = process.env.PHASE11_D1_DATABASE_ID || '6888b506-2f45-4913-849e-57d9aff6c3a1';
   const base = `https://api.cloudflare.com/client/v4/accounts/${account}`;
   async function request(suffix, init = {}, retry = true) {
+    let authRecoveryAttempted = false;
     for (let attempt = 0; ; attempt++) {
       try {
-        const response = await fetch(base + suffix, { ...init, headers: { Authorization: `Bearer ${token}`, ...init.headers }, signal: AbortSignal.timeout(120000) });
+        const response = await fetch(base + suffix, { ...init, headers: { Authorization: `Bearer ${credential.token}`, ...init.headers }, signal: AbortSignal.timeout(120000) });
+        if (response.status === 401 && !authRecoveryAttempted && (init.method || 'GET') === 'GET') {
+          authRecoveryAttempted = true;
+          const next = await recoverExpiredOAuth({ status: 401, method: 'GET', credential,
+            reload: readCredential,
+            refresh: async () => {
+              try { await promisify(execFile)(process.execPath, [fileURLToPath(new URL('../node_modules/wrangler/bin/wrangler.js', import.meta.url)), 'whoami'], { timeout: 45000, env: { ...process.env, CI: 'true' } }); }
+              catch { const error = Error('OAuth refresh failed; read not replayed'); error.retryable = false; throw error; }
+            },
+          });
+          if (next) { await response.arrayBuffer(); credential = next; continue; }
+        }
         if (!response.ok) {
           const error = Error(`Cloudflare HTTP ${response.status}: ${init.method || 'GET'} ${suffix}`);
           error.retryable = [408, 425, 429, 500, 502, 503, 504].includes(response.status);
