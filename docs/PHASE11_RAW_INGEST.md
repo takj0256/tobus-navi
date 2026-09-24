@@ -27,6 +27,8 @@ PCのgzipコピーは自動削除しない。PC停止が70時間を超えたら�
 
 ## 配置・点検
 
+2026-09-25：3種類のPC runnerは`phase11_auth.sh`で認証事前確認のみ最大3回（間隔2/4秒）試す。一時的なOAuth更新接続タイムアウトへの対策であり、長時間のネットワーク障害を保証付きで解消するものではない。切り戻す場合は両バッチロック下で退避した3runnerを戻す（未参照helperは残してよい）。raw欠損が復元できない日を無断で公開せず、当日日次不在が次回28日取得も止め得ることを報告する。
+
 `tools/prepare_phase11_raw.mjs EXTERNAL_ROOT WORKER_URL` はGit外にmode 0600の専用認証値と旧状態・ライフサイクルを保存する。秘密値をログ・共有文書に出さない。実デプロイの最初のraw時刻を `config.json.start_at` にしてから定期処理を開始する。Workerは `COLLECTION_MODE=raw-v1`。ソース、Worker配信、batch/appコピー、Windowsタスクは別々に確認する。
 
 - ローカル：`raw-processor.log`、`raw-processor/status.json`、`checkpoint.json`、`raw-processor.lock`。

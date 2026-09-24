@@ -10,6 +10,7 @@ source "$NVM_DIR/nvm.sh"
 set -u
 cd "$batch_root/app"
 echo "$(date -Is) raw processor starting"
-node node_modules/wrangler/bin/wrangler.js whoami >/dev/null
+source ./tools/phase11_auth.sh
+phase11_auth_check node node_modules/wrangler/bin/wrangler.js
 node tools/process_phase11_raw.mjs "$batch_root/raw-processor"
 echo "$(date -Is) raw processor complete"

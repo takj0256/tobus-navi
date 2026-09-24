@@ -27,7 +27,8 @@ trap mark_failed ERR
 yesterday_key="$(TZ=Asia/Tokyo date -d '1 day ago' +%F)"
 if [[ -n "${PHASE11_RAW_DIR:-}" ]]; then
   current_step="draining raw capture before daily publication"
-  "${wrangler[@]}" whoami >/dev/null
+  source "$project_dir/tools/phase11_auth.sh"
+  phase11_auth_check "${wrangler[@]}"
   (
     flock -w 1800 8
     node "$project_dir/tools/process_phase11_raw.mjs" "$PHASE11_RAW_DIR" --through "$yesterday_key"

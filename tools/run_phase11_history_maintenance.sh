@@ -10,7 +10,8 @@ set +u
 source "$NVM_DIR/nvm.sh"
 set -u
 cd "$batch_root/app"
-./node_modules/.bin/wrangler whoami >/dev/null
+source ./tools/phase11_auth.sh
+phase11_auth_check ./node_modules/.bin/wrangler
 # Small historical backfill; current 28 dates are archived by the daily runner.
 node tools/archive_phase11_history.mjs backfill 3 "$batch_root/history"
 node tools/export_phase11_legacy.mjs "$batch_root/legacy-export"
