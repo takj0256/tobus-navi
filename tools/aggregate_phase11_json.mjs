@@ -5,6 +5,7 @@ import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { basename, resolve } from "node:path";
 import { buildLocalProfiles } from "./phase11-local-model.js";
 import { buildHistoryProfiles } from "./phase11-history-model.js";
+import { summarizeInputQuality } from './phase11-approved-gaps.mjs';
 
 const [inputDir, outputDir] = process.argv.slice(2);
 if (!inputDir || !outputDir) {
@@ -64,6 +65,7 @@ const manifest = {
   source_objects: result.sourceObjects,
   ...(historyMode ? { candidate_only: true, strategy: result.strategy, limitations: result.limitations } : {}),
   source_dates: files.map((file) => basename(file, ".json")),
+  ...(summarizeInputQuality(payloads) ? { data_quality: summarizeInputQuality(payloads) } : {}),
   profiles: summarize(result.profiles),
   weather_profiles: summarize(result.weatherProfiles),
   shards,

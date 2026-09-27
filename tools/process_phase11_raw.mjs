@@ -3,6 +3,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { gzipSync } from 'node:zlib';
 import { runScheduledCollection } from '../worker/worker.js';
+import { unapprovedMissingKeys } from './phase11-approved-gaps.mjs';
 import { atomicJson, readJson, cloudflareClient, sha256 } from './phase11-storage.mjs';
 
 export function rawTimestamp(key) {
@@ -137,20 +138,23 @@ export async function processRaw({ root, client, now = Date.now(), maxObjects = 
   }
   // Audit expected captures; no fabricated observations and no stale-day success.
   let missing = 0;
+  const missingKeys = [];
   const from = Math.max(start, Math.floor((end - 86400000) / 60000) * 60000);
   for (let ms = from; ms + 60000 <= end; ms += 60000) {
     const iso = new Date(ms).toISOString();
     const key = `raw-v1/${iso.slice(0, 10)}/${iso.slice(11, 13)}/${iso.slice(14, 16)}.pb`;
-    if (!cp.seen[key] && !todo.some(o => o.key === key)) missing++;
+    if (!cp.seen[key] && !todo.some(o => o.key === key)) { missing++; missingKeys.push(key); }
   }
   const status = { version: 1, checked_at: new Date(now).toISOString(), start_at: config.start_at, cursor: cp.cursor, processed, total_processed: cp.count,
     backlog: Math.max(0, todo.length - processed), missing_capture_minutes_last_day: missing,
+    missing_raw_keys: missingKeys,
+    unapproved_missing_capture_minutes: unapprovedMissingKeys(through, missingKeys).length,
     replayed_without_live_enrichment: cp.replayed_without_live_enrichment || 0,
     pending_hours: Object.keys(cp.pending).length, weather_fetched_at: cp.state.weather?.fetched_at || null,
     weather_error: cp.state.weather_error || null, anomaly_error: cp.state.anomaly_error || null, d1_budget: budget };
   await atomicJson(path.join(root, 'status.json'), status);
   await client.ingestPut('state/processor-v1.json', Buffer.from(JSON.stringify(status)));
-  if (through && (status.backlog || missing)) throw Error(`Daily publication blocked: backlog=${status.backlog}, missing capture minutes=${missing}`);
+  if (through && (status.backlog || status.unapproved_missing_capture_minutes)) throw Error(`Daily publication blocked: backlog=${status.backlog}, missing capture minutes=${missing}, unapproved=${status.unapproved_missing_capture_minutes}`);
   return status;
 }
 

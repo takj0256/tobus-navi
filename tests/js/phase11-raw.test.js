@@ -6,6 +6,7 @@ import path from 'node:path';
 import worker, { runScheduledCollection, captureRawFeed } from '../../worker/worker.js';
 import { processRaw, rawTimestamp, mergeEvents } from '../../tools/process_phase11_raw.mjs';
 import { atomicJson, readJson } from '../../tools/phase11-storage.mjs';
+import { approvedMissingKeys } from '../../tools/phase11-approved-gaps.mjs';
 
 function varint(n) { const a=[]; n=BigInt(n); while(n>127n){a.push(Number(n&127n)|128);n>>=7n;}return [...a,Number(n)]; }
 const vi=(f,n)=>[...varint(f*8),...varint(n)];
@@ -122,4 +123,18 @@ test('PC weather enrichment tolerates a response slower than five seconds',async
   }});
   assert.equal(result.weather_error,null);
   assert.equal(result.weather_fetched_at,new Date(f.start+180000).toISOString());
+});
+
+test('daily gate allows the exact approved gap but still rejects another gap',async t=>{
+  const f=await fixture(t),day='2026-09-26',start=Date.parse(day+'T00:00+09:00'),seen={};
+  for(let i=0;i<1440;i++){const iso=new Date(start+i*60000).toISOString();seen[`raw-v1/${iso.slice(0,10)}/${iso.slice(11,13)}/${iso.slice(14,16)}.pb`]='test-hash';}
+  delete seen[approvedMissingKeys(day)[0]];
+  await atomicJson(path.join(f.root,'config.json'),{start_at:new Date(start).toISOString()});
+  const checkpoint={version:1,start_at:new Date(start).toISOString(),cursor:'raw-v1/2026-09-26/15/01.pb',seen,state:{vehicles:{},candidates:[]},pending:{},count:1439};
+  await atomicJson(path.join(f.root,'checkpoint.json'),checkpoint);
+  const opts={...f,now:start+28*3600000,through:day};
+  const result=await processRaw(opts);assert.equal(result.missing_capture_minutes_last_day,1);assert.equal(result.unapproved_missing_capture_minutes,0);
+  delete checkpoint.seen['raw-v1/2026-09-26/01/55.pb'];
+  await atomicJson(path.join(f.root,'checkpoint.json'),checkpoint);
+  await assert.rejects(processRaw(opts),/unapproved=1/);
 });

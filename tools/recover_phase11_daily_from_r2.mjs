@@ -5,6 +5,8 @@ import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 import { buildCompactDailyGroups } from "../worker/worker.js";
+import { dailyQuality } from './phase11-approved-gaps.mjs';
+import { createHash } from 'node:crypto';
 
 const ACCOUNT_ID = process.env.CLOUDFLARE_ACCOUNT_ID || "280d634e84421957ce4f72c88ae47051";
 const BUCKET = process.env.PHASE11_R2_BUCKET || "tobus-phase11-events";
@@ -141,16 +143,20 @@ const daily = {
   date_key: dateKey,
   source_keys: payloads.map((item) => item.key).sort(),
   groups: buildCompactDailyGroups(uniqueEvents),
+  ...(dailyQuality(dateKey) ? { data_quality: dailyQuality(dateKey) } : {}),
 };
 const sampleCount = daily.groups.reduce((sum, group) => sum + (group.samples || []).length, 0);
 if (!daily.groups.length || !sampleCount) throw new Error(`${dateKey}: generated daily object is empty`);
 
+const dailyBody = JSON.stringify(daily);
 await api(`${API_BASE}/${dailyKey}`, {
   method: "PUT",
   headers: { "Content-Type": "application/json" },
-  body: JSON.stringify(daily),
+  body: dailyBody,
 });
-const verified = await (await api(`${API_BASE}/${dailyKey}`)).json();
+const verifiedBody = await (await api(`${API_BASE}/${dailyKey}`)).text();
+if (createHash('sha256').update(verifiedBody).digest('hex') !== createHash('sha256').update(dailyBody).digest('hex')) throw Error('Daily content hash mismatch');
+const verified = JSON.parse(verifiedBody);
 const verifiedSamples = (verified.groups || []).reduce((sum, group) => sum + (group.samples || []).length, 0);
 if (verified.date_key !== dateKey || verifiedSamples !== sampleCount) {
   throw new Error(`${dateKey}: uploaded daily object verification failed`);

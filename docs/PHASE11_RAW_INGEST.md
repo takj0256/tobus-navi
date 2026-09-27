@@ -27,6 +27,8 @@ PCのgzipコピーは自動削除しない。PC停止が70時間を超えたら�
 
 ## 配置・点検
 
+2026-09-27承認：9/24〜26の指定9 rawキーだけ、欠損を明示した日次/統計公開を許容する（D18）。日次`data_quality.status=incomplete-approved`、manifest/currentは`contains-incomplete-approved-days`として欠損分数・日付・キーを引き継ぐ。実欠損数はstatusから消さず、throughゲートで未承認欠損だけを停止条件にする。バックログは常に停止条件。将来日の穴は自動許容しない。旧currentと3つの実行用ファイルをGit外へ退避し、再生成日次は既存値を上書きせず全文SHA-256を再取得照合する。失敗時はcurrentを切替せず旧世代を維持する。必要な切り戻しは両ロック下で3ファイルを退避版へ戻す。新世代公開後に品質上の問題を発見した場合のみ、退避currentと旧世代の整合を再確認してcurrentを戻す。raw/hourly/世代を削除しない。
+
 2026-09-25：3種類のPC runnerは`phase11_auth.sh`で認証事前確認のみ最大3回（間隔2/4秒）試す。一時的なOAuth更新接続タイムアウトへの対策であり、長時間のネットワーク障害を保証付きで解消するものではない。切り戻す場合は両バッチロック下で退避した3runnerを戻す（未参照helperは残してよい）。raw欠損が復元できない日を無断で公開せず、当日日次不在が次回28日取得も止め得ることを報告する。
 
 `tools/prepare_phase11_raw.mjs EXTERNAL_ROOT WORKER_URL` はGit外にmode 0600の専用認証値と旧状態・ライフサイクルを保存する。秘密値をログ・共有文書に出さない。実デプロイの最初のraw時刻を `config.json.start_at` にしてから定期処理を開始する。Workerは `COLLECTION_MODE=raw-v1`。ソース、Worker配信、batch/appコピー、Windowsタスクは別々に確認する。
