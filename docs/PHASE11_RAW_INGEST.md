@@ -4,6 +4,16 @@
 
 ## 境界
 
+### 2026-09-29 取得耐障害化（実装済み・未デプロイ）
+
+`worker/raw-capture.js`に取得ポリシーを分離した。ネットワーク例外、取得/本文タイムアウト、HTTP 408/429/500/502/503/504だけ最大2試行。1試行は本文読取を含め8秒、待機込み取得全体は20秒以内。再試行待機は最低500ms、Retry-Afterが長過ぎる/不正なら再試行しない。認証等の恒久HTTP、空本文、512KiB超過は即失敗。ストリーム中にも上限を検査する。
+
+20秒は取得部分の予算であり、R2 PUTの完了時間を含まない。PUTは1回だけ、結果不明の書き込みを自動再試行せず、既存の条件付き保存を維持。遅れて返る取得結果からPUTしない。予定分キーは維持し、実際の本文取得完了を`captured_at`、試行回数を`capture_attempts`へ記録する。再試行で時刻が進んでもGTFS本文の観測timestampを変更せず、過去原本の復元とは呼ばない。
+
+構造化ログは`phase11_raw`、key、予定/取得時刻、attempt、elapsed_ms、bytes、stage（fetch/http/body/storage）、固定code、HTTP status、結果を記録。上流URL・鍵・レスポンス本文・外部例外文字列は出さない。通常1回/分、再試行時2回/分の独自ログ（プラットフォーム例外ログ等は別）。wranglerで保存ログを有効にし、全HTTPのinvocationログとtraceは無効化する設定を追加。[公式Workers Logs仕様](https://developers.cloudflare.com/workers/observability/logs/workers-logs/)に従うが、まだ配信していないため保存・閲覧可否は未確認。以前のtelemetry照会403を解消したとは扱わず、権限拡大は行わない。
+
+既存の欠損許可9キー、日次停止ゲート、D1/集計/公開処理は変更しない。取得再試行は将来の一時障害対策であり、失われた9/28・9/29の原本は復元できない。
+
 1. Worker毎分CronはGTFS-RTを取得し、復号せず `raw-v1/UTC日/時/分.pb` に保存して終了。1〜524,288 bytesのみ受け付ける。条件付きPUTで同じ予定分の最初の保存を保持する。失敗は成功扱いにしない。
 2. Windowsの `Tobus Phase11 Raw Processor` が2分ごとにWSLを起動。公開から90秒経過した入力を昇順に処理。ローカルgzip保存・検証後、既存の復号・区間イベント生成を実行する。
 3. 車両状態、カーソル、入力SHA-256、時間別出力待ちを一つのcheckpointへatomic renameで確定。R2 hourlyはevent_idで既存値と統合し再読込検証後に出力待ちを消す。失敗・再起動で二重加算しない。既存events/hourlyを削除しない。

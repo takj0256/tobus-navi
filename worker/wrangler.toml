@@ -2,6 +2,17 @@ name = "tobus-realtime-proxy"
 main = "worker.js"
 compatibility_date = "2026-07-01"
 
+[observability]
+enabled = true
+head_sampling_rate = 1
+
+[observability.logs]
+enabled = true
+invocation_logs = false
+
+[observability.traces]
+enabled = false
+
 [triggers]
 # WorkerはGTFS-RT収集だけを担当する。重いプロファイル集計はWSLで行う。
 crons = ["* * * * *"]

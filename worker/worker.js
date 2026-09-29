@@ -1,4 +1,5 @@
 import { decodeGtfsRealtime } from "../js/realtime.js";
+import { captureWithPolicy } from "./raw-capture.js";
 import {
   buildCorrectionRatio,
   buildWeatherAdjustmentProfile,
@@ -137,20 +138,8 @@ export async function runScheduledCollection(env, now = new Date(), fetchImpl = 
 
 // Capture succeeds independently of decoding, D1, weather and compaction.
 // First successful delivery for a scheduled minute wins; retries cannot replace it.
-export async function captureRawFeed(env, now, fetchImpl = fetch) {
-  const response = await fetchWithTimeout(SOURCE, UPSTREAM_TIMEOUT_MS, fetchImpl);
-  if (!response.ok) throw new Error(`ODPT upstream HTTP ${response.status}`);
-  const bytes = await response.arrayBuffer();
-  if (!bytes.byteLength || bytes.byteLength > 512 * 1024) throw new Error("Raw feed size outside 1..524288 bytes");
-  const minute = new Date(Math.floor(now.getTime() / 60000) * 60000).toISOString();
-  const key = `raw-v1/${minute.slice(0, 10)}/${minute.slice(11, 13)}/${minute.slice(14, 16)}.pb`;
-  const saved = await env.EVENT_BUCKET.put(key, bytes, {
-    onlyIf: { etagDoesNotMatch: "*" },
-    httpMetadata: { contentType: "application/x-protobuf" },
-    customMetadata: { scheduled_at: now.toISOString(), captured_at: new Date().toISOString(), format: "gtfs-rt-v1" },
-  });
-  console.log(JSON.stringify({ phase11_raw: true, key, bytes: bytes.byteLength, duplicate: saved === null }));
-  return { enabled: true, raw: true, key, bytes: bytes.byteLength, duplicate: saved === null };
+export async function captureRawFeed(env, now, fetchImpl = fetch, runtime) {
+  return captureWithPolicy({ bucket: env.EVENT_BUCKET, source: SOURCE, scheduledAt: now, fetchImpl, runtime });
 }
 
 export function collectSegmentEvents(feed, state, nowMs = Date.now()) {
