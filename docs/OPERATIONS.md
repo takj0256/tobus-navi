@@ -35,6 +35,8 @@ Workerのデプロイ、D1のマイグレーション、集計用コピーの更
 
 ## 集計と点検
 
+2026-09-30：raw再試行対策をWorker版`cfd90427-ccdb-4ac8-9af9-e5862d05625a`へ反映した。ソース`baab4d5`、151テスト再成功、保存ログ設定と短時間raw保存を確認。旧版`7a813fd2-4214-408a-beb9-cea4ff96e192`と設定をGit外に退避済み。悪化時はこの旧版へWorker rollbackしobservability設定も退避値に戻す。集計用コピー/PWAの更新とR2 current操作は実施していない。短時間成功とピーク/翌日成功を区別し、過去ログAPI403を未解決として扱う。
+
 2026-09-29のraw取得耐障害化はソースとテストのみ。反映時は直前Worker版・設定を退避し、`worker/worker.js`だけでなく新しい`worker/raw-capture.js`と`worker/wrangler.toml`を一組として検証・配信する。実行用コピー同期は別に記録する。配信後はrawメタデータ、構造化ログの保存・閲覧、CPU/例外数、ピーク時と翌日04:15を確認する。悪化時は退避した直前Worker版へrollbackし、保存ログ設定も旧設定と照合する。R2原本/currentの削除・欠損許可変更はロールバックに含めない。
 
 未加工入力先行保存へ切り替えた環境では[PHASE11_RAW_INGEST.md](PHASE11_RAW_INGEST.md)を優先する。Worker raw、PC処理、時間別、日次、統計公開を別々に点検し、旧state/latest.jsonを最新収集状態と誤認しない。PC専用タスクは2分間隔、04:15前には処理待ちを検査する。
