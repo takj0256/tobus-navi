@@ -1,0 +1,8 @@
+<!doctype html><html lang="ja"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>都バス 補完・到着予測 実験室</title>
+<style>body{font:16px/1.7 system-ui;max-width:960px;margin:32px auto;padding:0 20px;color:#193545;background:#f3f7fa}h1{font-size:26px}section{background:white;border:1px solid #d6e1e8;border-radius:12px;padding:20px;margin:20px 0}button,select{font:inherit;padding:8px}table{width:100%;border-collapse:collapse}td,th{text-align:left;padding:8px;border-bottom:1px solid #ddd}.warning{border-left:5px solid #b97514;padding:12px;background:#fff4dc}.value{font-size:28px;color:#006f74}small{color:#52616b}</style>
+<h1>欠損補完 × 到着予測</h1><p class="warning">研究デモ・本番未接続。実到着ではなく「次停留所の初回観測」が教師です。推定値を実測に混ぜません。</p>
+<section><label>モデル <select id="task"><option value="imputation">欠損した区間所要時間</option><option value="eta">次停留所までの残り時間</option></select></label><div id="metrics"></div></section>
+<section><h2>過去データで予測を再生</h2><button id="next">次の例を見る</button><p id="when"></p><div class="value" id="prediction"></div><p id="detail"></p><small>表示幅は検証データの残差から算出した参考幅で、保証された到着範囲ではありません。</small></section>
+<section><h2>評価範囲と制約</h2><div id="limits"></div></section><p id="error" role="alert"></p>
+<script type="module" src="app.js"></script></html>
