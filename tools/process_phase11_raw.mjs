@@ -29,6 +29,19 @@ async function optionalGet(client, key) {
   catch (e) { if (/Cloudflare HTTP 404:/.test(e.message)) return null; throw e; }
 }
 
+// 96 normal weather writes/UTC day plus 32 uncertain-failure reservations.
+// Keep the original total cap; anomaly bursts must not starve current weather.
+export function reserveD1Operation(budget, sql) {
+  const kind = /^\s*SELECT/i.test(sql) ? 'reads' : 'writes';
+  const weather = /^\s*INSERT\s+INTO\s+weather_current\b/i.test(sql);
+  const cap = kind === 'writes' && !weather ? 2872 : 3000;
+  if ((budget[kind] || 0) >= cap) {
+    throw Error(`PC D1 ${kind} daily operation budget exhausted${cap < 3000 ? ' (128 reserved for weather)' : ''}`);
+  }
+  budget[kind] = (budget[kind] || 0) + 1;
+  return kind;
+}
+
 export async function processRaw({ root, client, now = Date.now(), maxObjects = 120, through, fetchImpl = fetch }) {
   const config = await readJson(path.join(root, 'config.json'));
   const start = Date.parse(config.start_at);
@@ -59,11 +72,8 @@ export async function processRaw({ root, client, now = Date.now(), maxObjects = 
   if (budget.day !== utcDay) budget = { day: utcDay, reads: 0, writes: 0 };
   function statement(sql, params = []) {
     async function execute() {
-      const kind = /^\s*SELECT/i.test(sql) ? 'reads' : 'writes';
       // Reserve before sending, including uncertain failures. No full profile reads/writes.
-      const cap = kind === 'reads' ? 3000 : 3000;
-      if (budget[kind] >= cap) throw Error(`PC D1 ${kind} daily operation budget exhausted`);
-      budget[kind]++;
+      reserveD1Operation(budget, sql);
       await atomicJson(budgetFile, budget);
       const result = await client.operationalQuery(sql, params);
       return result[0];
