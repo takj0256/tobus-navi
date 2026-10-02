@@ -83,6 +83,14 @@ test('daily gate refuses missing capture minutes',async t=>{
   const f=await fixture(t);
   await assert.rejects(processRaw({...f,now:f.start+20*3600000,through:'2026-09-23'}),/missing capture/);
 });
+test('available-observation policy records missing captures but still blocks backlog',async t=>{
+ const f=await fixture(t),config={start_at:new Date(f.start).toISOString(),publication_policy:'available-observations-v1'};
+ await atomicJson(path.join(f.root,'config.json'),config);
+ const opts={...f,now:f.start+20*3600000,through:'2026-09-23'};
+ await assert.rejects(processRaw({...opts,maxObjects:1}),/backlog=1/);
+ const result=await processRaw(opts);assert.ok(result.missing_capture_minutes_last_day>0);assert.equal(result.unapproved_missing_capture_minutes,0);assert.equal(result.audit_date,'2026-09-23');
+ const audit=await readJson(path.join(f.root,'daily-audits/2026-09-23.json'));assert.equal(audit.backlog,0);assert.equal(audit.missing_raw_keys.length,result.missing_capture_minutes_last_day);
+});
 test('merge validates ids and raw keys are confined',()=>{
   assert.throws(()=>rawTimestamp('../secret'),/Invalid/);
   assert.throws(()=>mergeEvents([{}],[]),/id/);

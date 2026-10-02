@@ -14,6 +14,6 @@ export function dailyQuality(day) {
   return keys.length ? { status: 'incomplete-approved', approval_date: '2026-09-27', missing_capture_minutes: keys.length, missing_raw_keys: keys, imputed_observations: 0, reason: 'Original observations unavailable; publish remaining observations with disclosed gaps.' } : undefined;
 }
 export function summarizeInputQuality(payloads) {
-  const days = payloads.filter(p => p.data_quality?.status === 'incomplete-approved').map(p => ({ date: p.date_key, ...p.data_quality }));
-  return days.length ? { status: 'contains-incomplete-approved-days', missing_capture_minutes: days.reduce((s, d) => s + d.missing_capture_minutes, 0), days } : undefined;
+  const days = payloads.filter(p => ['incomplete-approved', 'partial-observations'].includes(p.data_quality?.status)).map(p => ({ date: p.date_key, ...p.data_quality }));
+  return days.length ? { status: days.some(d => d.status === 'partial-observations') ? 'contains-partial-observations' : 'contains-incomplete-approved-days', missing_capture_minutes: days.reduce((s, d) => s + d.missing_capture_minutes, 0), imputed_observations: 0, days } : undefined;
 }

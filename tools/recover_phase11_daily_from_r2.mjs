@@ -6,6 +6,7 @@ import path from "node:path";
 import process from "node:process";
 import { buildCompactDailyGroups } from "../worker/worker.js";
 import { dailyQuality } from './phase11-approved-gaps.mjs';
+import { AVAILABLE_OBSERVATIONS_POLICY, qualityFromAudit, observedEventsOutsideGaps } from './phase11-publication-quality.mjs';
 import { createHash } from 'node:crypto';
 
 const ACCOUNT_ID = process.env.CLOUDFLARE_ACCOUNT_ID || "280d634e84421957ce4f72c88ae47051";
@@ -137,13 +138,27 @@ process.stderr.write("\n");
 const events = [];
 for (const { payload } of payloads) events.push(...(payload.events || []));
 const uniqueEvents = [...new Map(events.map((event) => [event.event_id || JSON.stringify(event), event])).values()];
+let quality = dailyQuality(dateKey);
+if (process.env.PHASE11_RAW_DIR) {
+  const rawRoot = process.env.PHASE11_RAW_DIR;
+  const config = JSON.parse(await fs.readFile(path.join(rawRoot, 'config.json'), 'utf8'));
+  if (config.publication_policy === AVAILABLE_OBSERVATIONS_POLICY) {
+    const audit = JSON.parse(await fs.readFile(path.join(rawRoot, 'daily-audits', `${dateKey}.json`), 'utf8'));
+    quality = qualityFromAudit(dateKey, audit);
+    const checkpoint = JSON.parse(await fs.readFile(path.join(rawRoot, 'checkpoint.json'), 'utf8'));
+    if (Object.keys(checkpoint.pending || {}).length) throw Error('Pending hourly outputs must be published before daily recovery');
+    if (quality.missing_raw_keys.some(key => checkpoint.seen?.[key])) throw Error('Daily audit no longer matches processed raw inputs');
+  }
+}
+const observedEvents = observedEventsOutsideGaps(uniqueEvents, quality);
+if (quality) quality.excluded_gap_crossing_events = uniqueEvents.length - observedEvents.length;
 const daily = {
   version: 2,
   generated_at: new Date().toISOString(),
   date_key: dateKey,
   source_keys: payloads.map((item) => item.key).sort(),
-  groups: buildCompactDailyGroups(uniqueEvents),
-  ...(dailyQuality(dateKey) ? { data_quality: dailyQuality(dateKey) } : {}),
+  groups: buildCompactDailyGroups(observedEvents),
+  ...(quality ? { data_quality: quality } : {}),
 };
 const sampleCount = daily.groups.reduce((sum, group) => sum + (group.samples || []).length, 0);
 if (!daily.groups.length || !sampleCount) throw new Error(`${dateKey}: generated daily object is empty`);

@@ -4,6 +4,7 @@ import { pathToFileURL } from 'node:url';
 import { gzipSync } from 'node:zlib';
 import { runScheduledCollection } from '../worker/worker.js';
 import { unapprovedMissingKeys } from './phase11-approved-gaps.mjs';
+import { AVAILABLE_OBSERVATIONS_POLICY, qualityFromAudit } from './phase11-publication-quality.mjs';
 import { atomicJson, readJson, cloudflareClient, sha256 } from './phase11-storage.mjs';
 
 export function rawTimestamp(key) {
@@ -145,16 +146,23 @@ export async function processRaw({ root, client, now = Date.now(), maxObjects = 
     const key = `raw-v1/${iso.slice(0, 10)}/${iso.slice(11, 13)}/${iso.slice(14, 16)}.pb`;
     if (!cp.seen[key] && !todo.some(o => o.key === key)) { missing++; missingKeys.push(key); }
   }
+  const partialPolicy = config.publication_policy === AVAILABLE_OBSERVATIONS_POLICY;
   const status = { version: 1, checked_at: new Date(now).toISOString(), start_at: config.start_at, cursor: cp.cursor, processed, total_processed: cp.count,
+    publication_policy: partialPolicy ? config.publication_policy : 'strict-captures', audit_date: through || null,
     backlog: Math.max(0, todo.length - processed), missing_capture_minutes_last_day: missing,
     missing_raw_keys: missingKeys,
-    unapproved_missing_capture_minutes: unapprovedMissingKeys(through, missingKeys).length,
+    unapproved_missing_capture_minutes: partialPolicy ? 0 : unapprovedMissingKeys(through, missingKeys).length,
     replayed_without_live_enrichment: cp.replayed_without_live_enrichment || 0,
     pending_hours: Object.keys(cp.pending).length, weather_fetched_at: cp.state.weather?.fetched_at || null,
     weather_error: cp.state.weather_error || null, anomaly_error: cp.state.anomaly_error || null, d1_budget: budget };
   await atomicJson(path.join(root, 'status.json'), status);
   await client.ingestPut('state/processor-v1.json', Buffer.from(JSON.stringify(status)));
-  if (through && (status.backlog || status.unapproved_missing_capture_minutes)) throw Error(`Daily publication blocked: backlog=${status.backlog}, missing capture minutes=${missing}, unapproved=${status.unapproved_missing_capture_minutes}`);
+  if (through && (status.backlog || status.pending_hours || (!partialPolicy && status.unapproved_missing_capture_minutes))) throw Error(`Daily publication blocked: backlog=${status.backlog}, missing capture minutes=${missing}, unapproved=${status.unapproved_missing_capture_minutes}`);
+  if (through && partialPolicy) {
+    const audit = { ...status, date_key: through, publication_policy: config.publication_policy };
+    qualityFromAudit(through, audit);
+    await atomicJson(path.join(root, 'daily-audits', `${through}.json`), audit);
+  }
   return status;
 }
 

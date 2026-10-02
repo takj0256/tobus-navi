@@ -79,7 +79,19 @@ for days_ago in $(seq 1 28); do
       break
     fi
     rm -f "$data_dir/$date_key.json"
-    if grep -q "The specified key does not exist" "$download_log"; then break; fi
+    if grep -q "The specified key does not exist" "$download_log"; then
+      if [[ -n "${PHASE11_RAW_DIR:-}" ]]; then
+        current_step="auditing and recovering available observations for $date_key"
+        (
+          flock -w 1800 8
+          node "$project_dir/tools/process_phase11_raw.mjs" "$PHASE11_RAW_DIR" --through "$date_key"
+        ) 8>"$(dirname "$PHASE11_RAW_DIR")/raw-processor.lock"
+        node "$project_dir/tools/recover_phase11_daily_from_r2.mjs" "$date_key"
+        # Fetch the verified daily on the next bounded attempt.
+        continue
+      fi
+      break
+    fi
     if (( attempt < 5 )); then
       delay=$((2 ** (attempt - 1)))
       printf 'R2 daily-v2/%s download failed; retry %d/5 in %ds\n' "$date_key" "$((attempt + 1))" "$delay" >&2
