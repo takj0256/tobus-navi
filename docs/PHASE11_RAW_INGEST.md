@@ -4,6 +4,14 @@
 
 ## 境界
 
+### 2026-10-04 遅延原本の安全な照合（D23）
+
+カーソル以前に見つかった未処理原本は、本文feed時刻が状態全体より古くなく、各車両が後退せず同時刻の停留所/便/順序も一致する場合だけ取り込む。原本のキー/本文/時刻は改変せず、checkpointのlate_inputsとstatusのlate_input_reconciliationsにSHA・feed_at・reconciled_atを保持する。カーソルを戻さずevent_idで統合し、同一原本を再加算しない。検証不能な古い観測は従来どおり停止し、一般的な履歴再構築を自動実装したとは扱わない。
+
+日次監査の遅延キーは対象JST日に限定してlate_capture_minutes/late_raw_keysへ継承し、予定分をまたぐ標本を除外する。missing_capture_minutesとは別項目で、遅延原本が存在することをその予定分の観測がある証明にしない。未来へ投影/過去へ捏造した標本は0。処理停止からの復旧と、Worker側の遅延保存の根因解消は別途確認する。
+
+captured_atがscheduled_atから120秒超遅れた原本は、既にカーソルより前で処理済みでもdelayed_capture_inputsへ記録する。日次監査は対象JST日全体の原本メタデータを再確認し、遅れて一覧に現れた原本と保存遅延を分ける。長時間の復旧では、前回の永続outboxを先に検証・公開し、120入力ごとにも保存する。失敗時はoutboxを保持し、event_idで重複を防いで再開する。
+
 ### 2026-10-02 残存観測からの日次公開（D21）
 
 ユーザーの指示に基づき、PC configの`publication_policy=available-observations-v1`で欠損分を記録した公開を有効にする。`process_phase11_raw --through 日付`は取得可能な原本処理とhourly出力を完了してから、`daily-audits/日付.json`に監査結果を保存する。欠損だけでは停止せず、backlog/pending_hoursは引き続き停止条件。従来の厳格モードは設定を外せば維持される。

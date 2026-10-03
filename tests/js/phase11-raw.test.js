@@ -3,8 +3,9 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import worker, { runScheduledCollection, captureRawFeed } from '../../worker/worker.js';
-import { processRaw, rawTimestamp, mergeEvents } from '../../tools/process_phase11_raw.mjs';
+import worker, { runScheduledCollection, captureRawFeed, collectSegmentEvents } from '../../worker/worker.js';
+import { processRaw, rawTimestamp, mergeEvents, validateForwardLateFeed } from '../../tools/process_phase11_raw.mjs';
+import { decodeGtfsRealtime } from '../../js/realtime.js';
 import { atomicJson, readJson } from '../../tools/phase11-storage.mjs';
 import { approvedMissingKeys } from '../../tools/phase11-approved-gaps.mjs';
 
@@ -64,6 +65,22 @@ test('failed publication retains outbox; restart publishes once',async t=>{
   await processRaw(f);
   assert.equal(JSON.parse(f.values.get('hourly/2026-09-23/00.json')).events.length,1);
 });
+test('bulk recovery flushes at 120 inputs and resumes a failed durable outbox without duplicates',async t=>{
+  const f=await fixture(t);
+  for(let i=2;i<125;i++) {
+    const iso=new Date(f.start+i*60000).toISOString();
+    f.values.set(`raw-v1/${iso.slice(0,10)}/${iso.slice(11,13)}/${iso.slice(14,16)}.pb`,feed(f.start+i*60000,i+1));
+  }
+  const put=f.client.ingestPut;
+  f.client.ingestPut=async(k,b)=>{if(k.startsWith('hourly'))throw Error('network');return put(k,b);};
+  await assert.rejects(processRaw({...f,now:f.start+130*60000,maxObjects:200}),/network/);
+  assert.equal((await readJson(path.join(f.root,'checkpoint.json'))).count,120);
+  f.client.ingestPut=put;
+  const result=await processRaw({...f,now:f.start+130*60000,maxObjects:200});
+  assert.equal(result.total_processed,125);assert.equal(result.pending_hours,0);
+  const events=[...f.values].filter(([k])=>k.startsWith('hourly/')).flatMap(([,b])=>JSON.parse(b).events);
+  assert.equal(events.length,124);assert.equal(new Set(events.map(e=>e.event_id)).size,124);
+});
 test('malformed raw input stops cursor and remains archived',async t=>{
   const f=await fixture(t);f.values.set('raw-v1/2026-09-23/00/01.pb',Buffer.from([10,127]));
   await assert.rejects(processRaw(f));
@@ -73,6 +90,54 @@ test('late input before cursor is never silently skipped',async t=>{
   const f=await fixture(t);f.values.delete('raw-v1/2026-09-23/00/00.pb');await processRaw(f);
   f.values.set('raw-v1/2026-09-23/00/00.pb',feed(f.start,1));
   await assert.rejects(processRaw(f),/Late raw/);
+});
+test('forward late capture is reconciled once without rewinding the cursor',async t=>{
+  const f=await fixture(t);
+  f.values.delete('raw-v1/2026-09-23/00/00.pb');
+  await processRaw(f);
+  f.values.set('raw-v1/2026-09-23/00/00.pb',feed(f.start+120000,3));
+  const result=await processRaw(f);
+  assert.equal(result.processed,1);
+  assert.equal(result.cursor,'raw-v1/2026-09-23/00/01.pb');
+  assert.equal(result.backlog,0);
+  assert.equal(Object.keys(result.late_input_reconciliations).length,1);
+  assert.equal(JSON.parse(f.values.get('hourly/2026-09-23/00.json')).events.length,1);
+  assert.equal((await processRaw(f)).processed,0);
+});
+test('late validation rejects equal-time conflicting stops and future observations',()=>{
+  const time=Date.parse('2026-09-23T00:00Z');
+  const state={vehicles:{v:{timestampMs:time,stopId:'s2',tripId:'t',stopSequence:2}}};
+  assert.throws(()=>validateForwardLateFeed(feed(time,3),state,time+600000),/conflicts/);
+  assert.throws(()=>validateForwardLateFeed(feed(time+3600000,3),state,time),/forward/);
+});
+test('collector keeps a newer state when later delivery carries an older timestamp',()=>{
+  const time=Date.parse('2026-09-23T00:00Z'),state={};
+  const decode=b=>decodeGtfsRealtime(b.buffer.slice(b.byteOffset,b.byteOffset+b.byteLength));
+  collectSegmentEvents(decode(feed(time+120000,3)),state,time+120000);
+  assert.deepEqual(collectSegmentEvents(decode(feed(time+60000,2)),state,time+180000),[]);
+  assert.equal(state.vehicles.v.stopId,'s3');
+  assert.equal(state.vehicles.v.timestampMs,time+120000);
+});
+test('late delivery with any older vehicle leaves the checkpoint unchanged',async t=>{
+  const f=await fixture(t);
+  await processRaw(f);
+  const before=await fs.readFile(path.join(f.root,'checkpoint.json'),'utf8');
+  f.values.set('raw-v1/2026-09-23/00/00.pb',feed(f.start,1));
+  const cp=JSON.parse(before);delete cp.seen['raw-v1/2026-09-23/00/00.pb'];
+  await atomicJson(path.join(f.root,'checkpoint.json'),cp);
+  const expected=await fs.readFile(path.join(f.root,'checkpoint.json'),'utf8');
+  await assert.rejects(processRaw(f),/Late raw/);
+  assert.equal(await fs.readFile(path.join(f.root,'checkpoint.json'),'utf8'),expected);
+});
+test('delayed capture metadata survives in status even for an already seen input',async t=>{
+  const f=await fixture(t);
+  await processRaw(f);
+  const list=f.client.list;
+  f.client.list=async p=>(await list(p)).map(o=>({...o,custom_metadata:{scheduled_at:'2026-09-23T00:00:59Z',captured_at:'2026-09-23T00:04:00Z'}}));
+  const result=await processRaw(f);
+  assert.equal(result.processed,0);
+  assert.equal(Object.keys(result.delayed_capture_inputs).length,2);
+  assert.equal(Object.keys((await readJson(path.join(f.root,'checkpoint.json'))).delayed_captures).length,2);
 });
 test('retention expiration and future cutoffs stop processing',async t=>{
   const f=await fixture(t);

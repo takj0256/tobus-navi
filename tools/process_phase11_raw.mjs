@@ -2,6 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { gzipSync } from 'node:zlib';
+import { decodeGtfsRealtime } from '../js/realtime.js';
 import { runScheduledCollection } from '../worker/worker.js';
 import { unapprovedMissingKeys } from './phase11-approved-gaps.mjs';
 import { AVAILABLE_OBSERVATIONS_POLICY, qualityFromAudit } from './phase11-publication-quality.mjs';
@@ -42,6 +43,22 @@ export function reserveD1Operation(budget, sql) {
   return kind;
 }
 
+export function validateForwardLateFeed(bytes, state, now) {
+  const feed = decodeGtfsRealtime(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength));
+  const time = Number(feed.timestamp) * 1000;
+  const previousTime = Math.max(0, ...Object.values(state.vehicles || {}).map(v => Number(v.timestampMs) || 0));
+  if (!Number.isFinite(time) || time <= 0 || time < previousTime || time > now + 60000) throw Error('Late raw input is not provably forward; rebuild required');
+  for (const v of feed.vehicles || []) {
+    const id = v?.vehicle?.id || v.entityId || v?.trip?.tripId;
+    if (!id || !v.stopId) continue;
+    const p = state.vehicles?.[id];
+    const t = Number(v.timestamp || feed.timestamp) * 1000;
+    if (!Number.isFinite(t) || t <= 0 || t > now + 60000 || (p && t < Number(p.timestampMs))) throw Error('Late raw input contains older observations; rebuild required');
+    if (p && t === Number(p.timestampMs) && (v.stopId !== p.stopId || (v.trip?.tripId || '') !== p.tripId || v.currentStopSequence !== p.stopSequence)) throw Error('Late raw input conflicts at equal timestamp; rebuild required');
+  }
+  return time;
+}
+
 export async function processRaw({ root, client, now = Date.now(), maxObjects = 120, through, fetchImpl = fetch }) {
   const config = await readJson(path.join(root, 'config.json'));
   const start = Date.parse(config.start_at);
@@ -59,13 +76,21 @@ export async function processRaw({ root, client, now = Date.now(), maxObjects = 
   const end = through ? Date.parse(`${through}T00:00:00+09:00`) + 86400000 : now - 90000;
   if (!Number.isFinite(end) || end > now - 90000) throw Error('Cannot process unsettled/future cutoff');
   const objects = [];
-  for (let day = Math.floor(Math.min(cursorMs, end) / 86400000) * 86400000; day <= Math.floor(end / 86400000) * 86400000; day += 86400000) {
+  const listFrom = Math.min(cursorMs, through ? end - 86400000 : end);
+  for (let day = Math.floor(listFrom / 86400000) * 86400000; day <= Math.floor(end / 86400000) * 86400000; day += 86400000) {
     objects.push(...await client.list(`raw-v1/${new Date(day).toISOString().slice(0, 10)}/`));
   }
   const eligible = objects.filter(o => rawTimestamp(o.key) >= start && rawTimestamp(o.key) < end).sort((a, b) => a.key.localeCompare(b.key));
-  const late = eligible.find(o => o.key <= cp.cursor && !cp.seen[o.key]);
-  if (late) throw Error(`Late raw input before cursor; rebuild required: ${late.key}`);
+  cp.delayed_captures ||= {};
+  for (const o of eligible) {
+    const metadata = o.custom_metadata || {};
+    if (Date.parse(metadata.captured_at) - Date.parse(metadata.scheduled_at) > 120000) {
+      cp.delayed_captures[o.key] = { scheduled_at: metadata.scheduled_at, captured_at: metadata.captured_at };
+    }
+  }
+  const late = eligible.filter(o => o.key <= cp.cursor && !cp.seen[o.key]);
   const todo = eligible.filter(o => o.key > cp.cursor);
+  const work = [...late, ...todo];
   const budgetFile = path.join(root, 'd1-budget.json');
   let budget = await readJson(budgetFile, {});
   const utcDay = new Date(now).toISOString().slice(0, 10);
@@ -98,10 +123,25 @@ export async function processRaw({ root, client, now = Date.now(), maxObjects = 
       active.pending[hour] = mergeEvents(active.pending[hour] || [], data.events);
     },
   };
+  async function publishPending() {
+    for (const [key, events] of Object.entries(cp.pending)) {
+      const priorBytes = await optionalGet(client, key);
+      const prior = priorBytes ? JSON.parse(priorBytes) : { events: [] };
+      if (!Array.isArray(prior.events)) throw Error(`Invalid existing hourly: ${key}`);
+      const payload = Buffer.from(JSON.stringify({ generated_at: new Date(now).toISOString(), events: mergeEvents(prior.events, events) }));
+      await client.ingestPut(key, payload);
+      delete cp.pending[key];
+      await atomicJson(checkpointFile, cp);
+    }
+  }
+  // Flush a durable prior outbox before extending it. Bound bulk-recovery checkpoints.
+  await publishPending();
   let processed = 0;
-  for (const object of todo.slice(0, maxObjects)) {
-    const time = rawTimestamp(object.key);
+  for (const object of work.slice(0, maxObjects)) {
+    let time = rawTimestamp(object.key);
     const bytes = await client.get(object.key);
+    const isLate = object.key <= cp.cursor;
+    if (isLate) time = validateForwardLateFeed(bytes, cp.state, now);
     const digest = sha256(bytes);
     const localRaw = path.join(root, 'raw', object.key.slice(7) + '.gz');
     await fs.mkdir(path.dirname(localRaw), { recursive: true });
@@ -128,25 +168,22 @@ export async function processRaw({ root, client, now = Date.now(), maxObjects = 
         await r.arrayBuffer();
       },
     }, new Date(time), async (url, init) => url.includes('api-public.odpt.org') ? new Response(bytes) : fetchImpl(url, init));
-    active.cursor = object.key;
+    active.cursor = object.key > cp.cursor ? object.key : cp.cursor;
     active.seen[object.key] = digest;
+    if (isLate) {
+      active.late_inputs ||= {};
+      active.late_inputs[object.key] = { sha256: digest, feed_at: new Date(time).toISOString(), reconciled_at: new Date(now).toISOString() };
+    }
     active.count++;
     if (!fresh) active.replayed_without_live_enrichment = (active.replayed_without_live_enrichment || 0) + 1;
     active.last_processed_at = new Date(now).toISOString();
     await atomicJson(checkpointFile, active); // state + outbox + cursor commit together
     cp = active;
     processed++;
+    if (processed % 120 === 0) await publishPending();
   }
   // Outbox is durable before publication. Replays merge by event_id, never add counts.
-  for (const [key, events] of Object.entries(cp.pending)) {
-    const priorBytes = await optionalGet(client, key);
-    const prior = priorBytes ? JSON.parse(priorBytes) : { events: [] };
-    if (!Array.isArray(prior.events)) throw Error(`Invalid existing hourly: ${key}`);
-    const payload = Buffer.from(JSON.stringify({ generated_at: new Date(now).toISOString(), events: mergeEvents(prior.events, events) }));
-    await client.ingestPut(key, payload);
-    delete cp.pending[key];
-    await atomicJson(checkpointFile, cp);
-  }
+  await publishPending();
   // Audit expected captures; no fabricated observations and no stale-day success.
   let missing = 0;
   const missingKeys = [];
@@ -157,9 +194,12 @@ export async function processRaw({ root, client, now = Date.now(), maxObjects = 
     if (!cp.seen[key] && !todo.some(o => o.key === key)) { missing++; missingKeys.push(key); }
   }
   const partialPolicy = config.publication_policy === AVAILABLE_OBSERVATIONS_POLICY;
+  await atomicJson(checkpointFile, cp); // Persist capture timing even when no new input remains.
   const status = { version: 1, checked_at: new Date(now).toISOString(), start_at: config.start_at, cursor: cp.cursor, processed, total_processed: cp.count,
     publication_policy: partialPolicy ? config.publication_policy : 'strict-captures', audit_date: through || null,
-    backlog: Math.max(0, todo.length - processed), missing_capture_minutes_last_day: missing,
+    backlog: Math.max(0, work.length - processed), missing_capture_minutes_last_day: missing,
+    late_input_reconciliations: cp.late_inputs || {},
+    delayed_capture_inputs: cp.delayed_captures,
     missing_raw_keys: missingKeys,
     unapproved_missing_capture_minutes: partialPolicy ? 0 : unapprovedMissingKeys(through, missingKeys).length,
     replayed_without_live_enrichment: cp.replayed_without_live_enrichment || 0,

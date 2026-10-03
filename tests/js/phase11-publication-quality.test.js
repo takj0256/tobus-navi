@@ -3,6 +3,21 @@ import { qualityFromAudit, observedEventsOutsideGaps, AVAILABLE_OBSERVATIONS_POL
 import { buildLocalProfiles } from '../../tools/phase11-local-model.js';
 import { summarizeInputQuality } from '../../tools/phase11-approved-gaps.mjs';
 const audit={date_key:'2026-10-01',start_at:'2026-09-22T23:07Z',checked_at:'2026-10-01T19:15:00Z',publication_policy:AVAILABLE_OBSERVATIONS_POLICY,backlog:0,pending_hours:0,missing_raw_keys:['raw-v1/2026-10-01/04/18.pb']};
+
+test('late captures are disclosed separately and do not become on-time observations',()=>{
+ const key='raw-v1/2026-10-01/04/18.pb';
+ const q=qualityFromAudit('2026-10-01',{...audit,missing_raw_keys:[],late_input_reconciliations:{[key]:{feed_at:'2026-10-01T04:24:00Z'}}});
+ assert.equal(q.status,'partial-observations');assert.equal(q.missing_capture_minutes,0);assert.equal(q.late_capture_minutes,1);
+ const t=Date.parse('2026-10-01T04:18Z');
+ assert.equal(observedEventsOutsideGaps([{timestamp_ms:t+120000,seconds:180}],q).length,0);
+ const summary=summarizeInputQuality([{date_key:'2026-10-01',data_quality:q}]);
+ assert.equal(summary.late_capture_minutes,1);assert.equal(summary.missing_capture_minutes,0);assert.equal(summary.imputed_observations,0);
+});
+test('timing metadata is disclosed even if the delayed key was processed before the cursor',()=>{
+ const key='raw-v1/2026-10-01/04/18.pb';
+ const q=qualityFromAudit('2026-10-01',{...audit,missing_raw_keys:[],delayed_capture_inputs:{[key]:{scheduled_at:'2026-10-01T04:18:59Z',captured_at:'2026-10-01T04:24:00Z'},'raw-v1/2026-09-30/00/00.pb':{}}});
+ assert.equal(q.late_capture_minutes,1);assert.deepEqual(q.late_raw_keys,[key]);assert.equal(q.status,'partial-observations');
+});
 test('partial day is disclosed, unfinished and mismatched audits remain blocked',()=>{
  const q=qualityFromAudit('2026-10-01',audit);assert.equal(q.missing_capture_minutes,1);assert.equal(q.imputed_observations,0);
  for(const changes of [{backlog:1},{pending_hours:1},{date_key:'2026-09-30'},{checked_at:'2026-10-01T14:00Z'},{missing_raw_keys:['raw-v1/2026-10-01/16/00.pb']}])assert.throws(()=>qualityFromAudit('2026-10-01',{...audit,...changes}));

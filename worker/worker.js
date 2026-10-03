@@ -161,6 +161,8 @@ export function collectSegmentEvents(feed, state, nowMs = Date.now()) {
       longitude: Number(vehicle?.position?.longitude),
     };
     const previous = state.vehicles[vehicleId];
+    // Repeated/stale deliveries must never rewind a vehicle or create a second event.
+    if (previous && current.timestampMs <= Number(previous.timestampMs)) continue;
     state.vehicles[vehicleId] = current;
     if (!previous || previous.stopId === current.stopId || previous.tripId !== current.tripId) continue;
     if (Number.isFinite(Number(previous.stopSequence)) && Number.isFinite(Number(current.stopSequence))

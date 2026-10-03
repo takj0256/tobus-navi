@@ -37,6 +37,8 @@ Workerのデプロイ、D1のマイグレーション、集計用コピーの更
 
 ## 集計と点検
 
+2026-10-04：遅延原本の非後退検証（D23）をPC処理へ追加。Late raw停止時は予定分・captured_at・本文feed/車両時刻・現在checkpointを照合し、真に古い観測は再構築対象として残す。遅延キーをseenへ手動追加したりカーソルを巻き戻したりしない。正しく取り込めた遅延原本はlate_input_reconciliations、日次/世代ではlate_capture_minutesとして記録する。両flock下で実行用ファイルとcheckpoint/status/予算をGit外へ退避して反映し、復旧後はbacklog/pending0・実DB天気・hourly整合・日次世代を検証する。出力や状態が進んだ後は古いcheckpointだけを戻さず、コードの対象限定rollbackと永続outboxの検証から判断する。集計用worker.jsは収集器の非後退2行だけを旧ランタイムへ適用し、未同期のraw-capture依存を持つWorker全体の置換はしない。Worker/PWAの配信とは別操作。
+
 2026-10-03：PC raw処理のD1要求予算は合計3,000書込み/UTC日のまま、非天気を合計2,872で止め、128をweather_current用に確保する（D22）。既存の予算ファイルは消去・リセットしない。09:00 JST以降の通常タスクでD1 observed_atとweather_error解除を確認する。上限に達して異常検知保存が停止することと、原本/hourly/統計公開の失敗を混同しない。反映は共有flock下で直前のprocess_phase11_raw.mjsをGit外へ退避し、この1ファイルのみを同期する。悪化時は両ロック取得後に退避ファイルを戻し、構文・ハッシュを確認する。Worker/PWAデプロイやR2 current変更は不要。
 
 2026-10-02：D21の残存観測公開を集計用コピーに反映。raw configで`available-observations-v1`を選択し、日次監査後に欠損を記録して公開する。欠損日の有効な時間帯を利用し、空白枠は他日の同じ区間/曜日区分/15分枠の実測から予測。過去28日のdaily 404も監査・復元対象。手順/ロールバックは[PHASE11_RAW_INGEST.md](PHASE11_RAW_INGEST.md)。通信・未処理・未保存による停止は残り、公開成功と収集の完全性を分けて時報に記載する。

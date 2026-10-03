@@ -15,5 +15,5 @@ export function dailyQuality(day) {
 }
 export function summarizeInputQuality(payloads) {
   const days = payloads.filter(p => ['incomplete-approved', 'partial-observations'].includes(p.data_quality?.status)).map(p => ({ date: p.date_key, ...p.data_quality }));
-  return days.length ? { status: days.some(d => d.status === 'partial-observations') ? 'contains-partial-observations' : 'contains-incomplete-approved-days', missing_capture_minutes: days.reduce((s, d) => s + d.missing_capture_minutes, 0), imputed_observations: 0, days } : undefined;
+  return days.length ? { status: days.some(d => d.status === 'partial-observations') ? 'contains-partial-observations' : 'contains-incomplete-approved-days', missing_capture_minutes: days.reduce((s, d) => s + d.missing_capture_minutes, 0), late_capture_minutes: days.reduce((s, d) => s + (d.late_capture_minutes || 0), 0), imputed_observations: 0, days } : undefined;
 }
