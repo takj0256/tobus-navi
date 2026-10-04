@@ -37,6 +37,8 @@ Workerのデプロイ、D1のマイグレーション、集計用コピーの更
 
 ## 集計と点検
 
+2026-10-05：日次復元のR2 PUTのみD24でUTF-8本文サイズに応じ120〜600秒/最大3試行とする。本文サイズ・上限・試行数をログに残す。GET・他の公開器は従来設定を維持。送信速度・再送・送信待ちを確認し、単にWSL停止や無料枠超過と判定しない。反映時は両flock下で日次復元スクリプトを退避し、新policy helperと一組でコピー・構文/cmpを検証。戻す場合は両ロック下で日次復元スクリプトだけを退避版へ戻す（未参照helperは残してよい）。checkpoint/日次/currentを無条件に巻き戻さない。通信低下の根因と翌日定刻成功は別途検証する。
+
 2026-10-04：遅延原本の非後退検証（D23）をPC処理へ追加。Late raw停止時は予定分・captured_at・本文feed/車両時刻・現在checkpointを照合し、真に古い観測は再構築対象として残す。遅延キーをseenへ手動追加したりカーソルを巻き戻したりしない。正しく取り込めた遅延原本はlate_input_reconciliations、日次/世代ではlate_capture_minutesとして記録する。両flock下で実行用ファイルとcheckpoint/status/予算をGit外へ退避して反映し、復旧後はbacklog/pending0・実DB天気・hourly整合・日次世代を検証する。出力や状態が進んだ後は古いcheckpointだけを戻さず、コードの対象限定rollbackと永続outboxの検証から判断する。集計用worker.jsは収集器の非後退2行だけを旧ランタイムへ適用し、未同期のraw-capture依存を持つWorker全体の置換はしない。Worker/PWAの配信とは別操作。
 
 2026-10-03：PC raw処理のD1要求予算は合計3,000書込み/UTC日のまま、非天気を合計2,872で止め、128をweather_current用に確保する（D22）。既存の予算ファイルは消去・リセットしない。09:00 JST以降の通常タスクでD1 observed_atとweather_error解除を確認する。上限に達して異常検知保存が停止することと、原本/hourly/統計公開の失敗を混同しない。反映は共有flock下で直前のprocess_phase11_raw.mjsをGit外へ退避し、この1ファイルのみを同期する。悪化時は両ロック取得後に退避ファイルを戻し、構文・ハッシュを確認する。Worker/PWAデプロイやR2 current変更は不要。

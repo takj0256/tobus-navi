@@ -8,12 +8,12 @@ import { buildCompactDailyGroups } from "../worker/worker.js";
 import { dailyQuality } from './phase11-approved-gaps.mjs';
 import { AVAILABLE_OBSERVATIONS_POLICY, qualityFromAudit, observedEventsOutsideGaps } from './phase11-publication-quality.mjs';
 import { createHash } from 'node:crypto';
+import { dailyRequestPolicy } from './phase11-daily-request-policy.mjs';
 
 const ACCOUNT_ID = process.env.CLOUDFLARE_ACCOUNT_ID || "280d634e84421957ce4f72c88ae47051";
 const BUCKET = process.env.PHASE11_R2_BUCKET || "tobus-phase11-events";
 const API_BASE = `https://api.cloudflare.com/client/v4/accounts/${ACCOUNT_ID}/r2/buckets/${BUCKET}/objects`;
 const RETRYABLE_STATUS = new Set([408, 425, 429, 500, 502, 503, 504]);
-const REQUEST_POLICY = { attempts: 8, baseDelayMs: 1000, timeoutMs: 120_000 };
 const dateKey = process.argv[2];
 if (!/^\d{4}-\d{2}-\d{2}$/.test(dateKey || "")) {
   throw new Error("usage: recover_phase11_daily_from_r2.mjs YYYY-MM-DD");
@@ -42,7 +42,7 @@ async function api(url, options = {}, allowMissing = false) {
   return fetchWithRetry(url, {
     ...options,
     headers: { Authorization: `Bearer ${token}`, ...(options.headers || {}) },
-  }, `${options.method || "GET"} ${new URL(url).pathname}`, { ...REQUEST_POLICY, allowMissing });
+  }, `${options.method || "GET"} ${new URL(url).pathname}`, { ...dailyRequestPolicy(options.method || 'GET', options.body), allowMissing });
 }
 
 async function fetchWithRetry(url, init, label, policy) {
@@ -164,6 +164,8 @@ const sampleCount = daily.groups.reduce((sum, group) => sum + (group.samples || 
 if (!daily.groups.length || !sampleCount) throw new Error(`${dateKey}: generated daily object is empty`);
 
 const dailyBody = JSON.stringify(daily);
+const uploadPolicy = dailyRequestPolicy('PUT', dailyBody);
+console.log(JSON.stringify({ dailyUpload: { bytes: Buffer.byteLength(dailyBody, 'utf8'), timeoutMs: uploadPolicy.timeoutMs, attempts: uploadPolicy.attempts } }));
 await api(`${API_BASE}/${dailyKey}`, {
   method: "PUT",
   headers: { "Content-Type": "application/json" },
