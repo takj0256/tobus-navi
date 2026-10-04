@@ -13,7 +13,9 @@ const DEFAULT_PREFIX = "profiles-v1";
 const RETRYABLE_STATUS = new Set([408, 425, 429, 500, 502, 503, 504]);
 
 export async function publishPhase11Json(outputDir, options = {}) {
-  const token = options.token || await oauthToken();
+  // Other normal runners can refresh Wrangler credentials during a long upload.
+  // Read the current credentials for each logical request; never retry a 401 PUT.
+  const getToken = options.tokenProvider || (options.token ? async () => options.token : oauthToken);
   const bucket = options.bucket || process.env.PHASE11_R2_BUCKET || DEFAULT_BUCKET;
   const prefix = normalizePrefix(options.prefix || process.env.PHASE11_PROFILE_PREFIX || DEFAULT_PREFIX);
   const accountId = options.accountId || process.env.CLOUDFLARE_ACCOUNT_ID || DEFAULT_ACCOUNT_ID;
@@ -41,22 +43,37 @@ export async function publishPhase11Json(outputDir, options = {}) {
 
   const generationPrefix = `${prefix}/generations/${manifest.generation}`;
   let uploaded = 0;
+  let reused = 0;
+  let completed = 0;
   await mapConcurrent(objects, concurrency, async (object) => {
     const payload = await fs.readFile(safeResolve(generationDir, object.relativePath));
-    await putObject(apiBase, `${generationPrefix}/${object.relativePath}`, payload, token, requestPolicy);
-    uploaded += 1;
-    if (uploaded % 20 === 0 || uploaded === objects.length) {
-      process.stderr.write(`uploaded ${uploaded}/${objects.length} profile objects\n`);
+    const key = `${generationPrefix}/${object.relativePath}`;
+    const response = options.resumeExisting === true ? await fetchWithRetry(`${apiBase}/${key}`, {
+      headers: { Authorization: `Bearer ${await getToken()}` },
+    }, `R2 GET ${key}`, { ...requestPolicy, allowMissing: true }) : null;
+    if (response) {
+      const existing = Buffer.from(await response.arrayBuffer());
+      if (!existing.equals(payload)) throw new Error(`Existing generation object differs: ${key}`);
+      reused += 1;
+    } else {
+      await putObject(apiBase, key, payload, await getToken(), requestPolicy);
+      uploaded += 1;
+    }
+    completed += 1;
+    if (completed % 20 === 0 || completed === objects.length) {
+      process.stderr.write(options.resumeExisting === true
+        ? `verified ${completed}/${objects.length} profile objects (${reused} reused)\n`
+        : `uploaded ${completed}/${objects.length} profile objects\n`);
     }
   });
 
   const generationManifestPayload = await fs.readFile(safeResolve(generationDir, "manifest.json"));
-  await putObject(apiBase, `${generationPrefix}/manifest.json`, generationManifestPayload, token, requestPolicy);
-  await verifyObject(apiBase, `${generationPrefix}/manifest.json`, generationManifestPayload, token, requestPolicy);
+  await putObject(apiBase, `${generationPrefix}/manifest.json`, generationManifestPayload, await getToken(), requestPolicy);
+  await verifyObject(apiBase, `${generationPrefix}/manifest.json`, generationManifestPayload, await getToken(), requestPolicy);
 
   // current.json is the atomic publication pointer and must always be written last.
-  await putObject(apiBase, `${prefix}/current.json`, currentPayload, token, requestPolicy);
-  await verifyObject(apiBase, `${prefix}/current.json`, currentPayload, token, requestPolicy);
+  await putObject(apiBase, `${prefix}/current.json`, currentPayload, await getToken(), requestPolicy);
+  await verifyObject(apiBase, `${prefix}/current.json`, currentPayload, await getToken(), requestPolicy);
   return {
     bucket,
     prefix,
@@ -64,7 +81,8 @@ export async function publishPhase11Json(outputDir, options = {}) {
     sourceObjects: manifest.source_objects,
     profiles: manifest.profiles.count,
     weatherProfiles: manifest.weather_profiles.count,
-    uploadedObjects: objects.length + 2,
+    uploadedObjects: uploaded + 2,
+    reusedObjects: reused,
   };
 }
 
@@ -139,6 +157,7 @@ async function fetchWithRetry(url, init, label, policy) {
     try {
       const response = await fetch(url, { ...init, signal: controller.signal });
       if (response.ok) return response;
+      if (policy.allowMissing && response.status === 404) return null;
       const body = (await response.text()).slice(0, 300);
       const error = new Error(`${label} failed with HTTP ${response.status}: ${body}`);
       error.retryable = RETRYABLE_STATUS.has(response.status);

@@ -63,9 +63,16 @@ test("Phase 11 JSON publication validates objects and switches current last", as
   const writes = [];
   let transientFailures = 1;
   let permanentFailure = false;
+  let permanentGetFailure = false;
   let requestCount = 0;
+  const authorizations = [];
   const server = http.createServer(async (request, response) => {
+    authorizations.push(request.headers.authorization);
     const key = request.url.slice(1);
+    if (request.method === 'GET' && permanentGetFailure) {
+      response.writeHead(401).end('not authorized');
+      return;
+    }
     if (request.method === "PUT") {
       requestCount += 1;
       if (permanentFailure) {
@@ -106,6 +113,41 @@ test("Phase 11 JSON publication validates objects and switches current last", as
   assert.ok(writes.at(-2).endsWith("/manifest.json"));
   assert.equal(writes.some((key) => key.includes("profiles-v1/generations/")), true);
   assert.equal(requestCount, writes.length + 1);
+
+  const resumeOptions = { token: 'test-token', apiBase: `http://127.0.0.1:${address.port}`, concurrency: 1, retryBaseDelayMs: 1, resumeExisting: true };
+  writes.length = 0;
+  const resumed = await publishPhase11Json(output, resumeOptions);
+  assert.equal(resumed.reusedObjects, 2);
+  assert.equal(resumed.uploadedObjects, 2);
+  assert.deepEqual(writes.map(k => k.split('/').at(-1)), ['manifest.json', 'current.json']);
+
+  const manifest = JSON.parse(await readFile(join(output, 'current.json'), 'utf8'));
+  const firstKey = `profiles-v1/generations/${manifest.generation}/${manifest.shards[0].path}`;
+  stored.delete(firstKey);
+  writes.length = 0;
+  const partial = await publishPhase11Json(output, resumeOptions);
+  assert.equal(partial.reusedObjects, 1);
+  assert.equal(partial.uploadedObjects, 3);
+  assert.equal(writes[0], firstKey);
+  assert.equal(writes.at(-1), 'profiles-v1/current.json');
+
+  const saved = stored.get(firstKey);
+  stored.set(firstKey, Buffer.from('unexpected immutable content'));
+  writes.length = 0;
+  await assert.rejects(publishPhase11Json(output, resumeOptions), /Existing generation object differs/);
+  assert.equal(writes.length, 0);
+  stored.set(firstKey, saved);
+  permanentGetFailure = true;
+  await assert.rejects(publishPhase11Json(output, resumeOptions), /401/);
+  assert.equal(writes.length, 0);
+  permanentGetFailure = false;
+
+  let tokenReads = 0;
+  authorizations.length = 0;
+  await publishPhase11Json(output, { ...resumeOptions, tokenProvider: async () => `rotated-test-${++tokenReads}` });
+  assert.equal(tokenReads, 6);
+  assert.equal(new Set(authorizations).size, 6);
+  assert.equal(authorizations.at(-1), 'Bearer rotated-test-6');
 
   permanentFailure = true;
   const requestsBeforeUnauthorized = requestCount;

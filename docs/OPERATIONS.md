@@ -37,6 +37,12 @@ Workerのデプロイ、D1のマイグレーション、集計用コピーの更
 
 ## 集計と点検
 
+2026-10-05：D27で公開器は各論理GET/PUT前に最新のWrangler認証情報を読む。長い処理中に通常rawタスクが認証更新しても開始時の古い値を保持しない。401の恒久エラー停止は維持し、PUTを無条件に再送しない。401停止後は通常whoamiで確認し、同世代の全文照合付き再開だけを検討する。token値をログ/文書に出さない。D26と同じ公開器1ファイルの退避/反映/rollback手順で扱う。
+
+2026-10-05：D26の公開再開はexportされたpublishPhase11Jsonを`resumeExisting:true, concurrency:1, retryAttempts:3`で呼ぶ。通常CLIは従来動作。ローカル生成済みフォルダーを保全し、当日対象/28入力、currentの新規退避とmanifest全文一致、原本処理の鮮度/backlog/pending0、共有aggregation.lockを確認する。既存シャードは全文一致を確認して再利用し、404のみPUT。不一致・401・通信失敗時にチェックを外さず停止する。uploadedObjectsとreusedObjectsを別報告。currentの切替/検証前に成功日マーカーを更新しない。集計用コピーの公開器だけを両flock下で退避・同期し、戻す場合は旧公開器を戻す。既存世代や原本を削除しない。
+
+2026-10-05：D25でサブPCのPhase 11タスク3件のWSL Actionを`--exec /usr/bin/env RES_OPTIONS=use-vc /bin/bash ...`に変更。スケジュール・principal・settingsは保持、旧XMLをGit外退避。環境変数は子プロセスのみで、PC/WSL全体のDNS設定変更ではない。切り戻しは退避XMLの元ActionだけをSet-ScheduledTaskで復元し、他設定を維持する。タスクを登録スクリプトで再登録すると既定Actionへ戻り得るため、ホスト側のprefixを再確認する。進行中の旧環境プロセスには反映されず、次の通常raw/日次で実環境と結果を確認する。TCP DNSでも転送低下は別問題として点検する。
+
 2026-10-05：日次復元のR2 PUTのみD24でUTF-8本文サイズに応じ120〜600秒/最大3試行とする。本文サイズ・上限・試行数をログに残す。GET・他の公開器は従来設定を維持。送信速度・再送・送信待ちを確認し、単にWSL停止や無料枠超過と判定しない。反映時は両flock下で日次復元スクリプトを退避し、新policy helperと一組でコピー・構文/cmpを検証。戻す場合は両ロック下で日次復元スクリプトだけを退避版へ戻す（未参照helperは残してよい）。checkpoint/日次/currentを無条件に巻き戻さない。通信低下の根因と翌日定刻成功は別途検証する。
 
 2026-10-04：遅延原本の非後退検証（D23）をPC処理へ追加。Late raw停止時は予定分・captured_at・本文feed/車両時刻・現在checkpointを照合し、真に古い観測は再構築対象として残す。遅延キーをseenへ手動追加したりカーソルを巻き戻したりしない。正しく取り込めた遅延原本はlate_input_reconciliations、日次/世代ではlate_capture_minutesとして記録する。両flock下で実行用ファイルとcheckpoint/status/予算をGit外へ退避して反映し、復旧後はbacklog/pending0・実DB天気・hourly整合・日次世代を検証する。出力や状態が進んだ後は古いcheckpointだけを戻さず、コードの対象限定rollbackと永続outboxの検証から判断する。集計用worker.jsは収集器の非後退2行だけを旧ランタイムへ適用し、未同期のraw-capture依存を持つWorker全体の置換はしない。Worker/PWAの配信とは別操作。
