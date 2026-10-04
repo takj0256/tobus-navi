@@ -1,6 +1,11 @@
 # 現在の状態・次の作業
 
-## 2026-10-05 日次PUTの転送時間不足を修正・公開復旧を検証中（D24）
+## 2026-10-05 通信・長時間認証を修正し日次公開を復旧確認（D24〜D27）
+
+- 最終結果：06:11:10 JST、保全した同じ世代の限定公開成功。170データオブジェクトを全文一致で再利用し、54未保存データ＋manifest/currentの計56 PUTだけ実行。TCP DNS/1並列/3試行で通信再試行なし。再集計・推定標本追加なし。currentは06:11:09.923更新、generated_at05:20:00.312、source_datesに昨日10/4を含む。current/manifest全文一致、全224データ存在/サイズ、抽出シャード/weather SHA一致、公開API HTTP200でgeneration一致・profiles/weather r2-json・corrections d1。
+- 最終06:14 PC/R2状態全文一致、cursor06:12/backlog0/pending0、欠損0、weather/anomalyなし、D1 read0/write83、replay2,884。実D1天気06:06:02.099 JST更新。初回5時replay2,859比+25は遅延処理のライブ付加省略で原本欠損ではない。両ロック解放を確認。06:15:30に再取得current/manifestと当日世代一致を検証後だけ成功日10/5をatomic記録、通常タスクは06:15:32に当日成功スキップ/終了0。翌日日次は10/6 04:15:15、初回定刻失敗と手動復旧成功を区別する。
+- ソースと集計用コピーのdaily復元/600秒policy/公開器をcmp確認。174テスト・構文成功、変更は共有ブランチ`eea9e31`までpush済み。Windows task ActionのTCP DNS適用・通常raw終了0を確認、予定時刻/実行principal/settingsを保持。最終R2全体6,820,373,964 bytes/raw111,600,493 bytes、PC raw162,371,898 bytes/空き857GiB。10/4確認比R2+293,585,719 bytes、PC+11,401,829 bytes。広範削除なし、容量増加の保持方針は残件。
+- 総合は注意：公開は復旧したが、送信速度/UDP DNS不調の基盤根因・次回定刻での対策効果・長時間認証境界の継続検証・10/2遅延3分の版付き品質訂正・過去欠損60分は未解消。旧completeを当日成功と扱わず、課金/権限拡大/Worker/PWA再配信/メインPCタスク変更なし。相手PC取り込み未確認。
 
 - 担当サブPC MSI/WSL、開始HEAD `ccecebf`、クリーン・fetch成功、`work/phase11-available-observations`。04:15:18開始、昨日daily PUTの120秒タイムアウト/fetch失敗を8試行し04:28:13終了1。初回両ロック解放、WSL/raw処理は稼働。旧currentは10/4 05:39の世代で、当日成功ではない。
 - 05:06の通常復旧でも送信失敗を再現。TCPの約0.8〜1.3Mbps、106秒でも送信待ち、再送増加を確認。DNSもWSL curlでIPv4/IPv6とも照会タイムアウト。TCP DNSはNode lookup3回/HTTP照会成功だが、既接続の転送遅延もありDNSだけを根因と断定しない。OS/DNS/VPN/課金/権限設定は変更していない。
