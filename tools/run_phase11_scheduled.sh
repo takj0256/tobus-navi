@@ -19,9 +19,9 @@ refresh_gtfs() {
     fi
   fi
 }
+trap 'scheduled_exit=$?; refresh_gtfs; exit "$scheduled_exit"' EXIT
 if [[ -f "$marker" ]] && [[ "$(<"$marker")" == "$today" ]]; then
   echo "$(date -Is) scheduled aggregation skipped: already succeeded $today"
-  refresh_gtfs
   exit 0
 fi
 echo "$(date -Is) scheduled aggregation starting for $today"
@@ -41,7 +41,5 @@ if bash ./tools/run_phase11_local_aggregation.sh; then
 else
   code=$?
   echo "$(date -Is) scheduled aggregation failed (exit $code)"
-  refresh_gtfs
   exit "$code"
 fi
-refresh_gtfs

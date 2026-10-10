@@ -6,13 +6,14 @@ from pathlib import Path
 
 
 class ScheduleTest(unittest.TestCase):
-    def run_case(self, code=0, succeeded=False, refresh_code=0):
+    def run_case(self, code=0, succeeded=False, refresh_code=0, nvm_missing=False):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root / "app/tools").mkdir(parents=True)
             (root / "gtfs-refresh").mkdir()
             (root / "nvm").mkdir()
-            (root / "nvm/nvm.sh").write_text(":\n")
+            if not nvm_missing:
+                (root / "nvm/nvm.sh").write_text(":\n")
             (root / "gtfs-refresh/enabled").touch()
             (root / "app/tools/run_phase11_local_aggregation.sh").write_text(f"exit {code}\n")
             (root / "gtfs-refresh/run_gtfs_refresh.sh").write_text(
@@ -36,3 +37,6 @@ class ScheduleTest(unittest.TestCase):
 
     def test_success_guard_still_retries_unfinished_gtfs(self):
         self.assertEqual(self.run_case(code=7, succeeded=True), (0, True, True))
+
+    def test_early_environment_failure_still_refreshes(self):
+        self.assertEqual(self.run_case(nvm_missing=True), (1, True, False))

@@ -49,16 +49,25 @@ let routeBounds;
 start();
 
 async function start() {
-  const routeFile = params.get("route_file") || "";
+  let routeFile = params.get("route_file") || "";
   if (!isValidRouteFile(routeFile)) return fail("路線データの指定が正しくありません。");
   if (!window.maplibregl) return fail("地図ライブラリを読み込めませんでした。通信状態を確認してください。");
   try {
     routeData = await loadRouteData(routeFile);
     const stopId = params.get("stop_id") || "";
     let dataset;
-    if (stopId) {
-      try { dataset = await loadDataset(); }
-      catch { dataWarnings.push("乗り場索引を取得できず、関連する別系統は未確認です。"); }
+    try { dataset = await loadDataset(); }
+    catch { dataWarnings.push("最新の乗り場索引を取得できず、関連する別系統・更新状態は未確認です。"); }
+    const latestFile = dataset?.routes?.[routeData.route.route_id]?.route_file;
+    if (isValidRouteFile(latestFile) && latestFile !== routeFile) {
+      // A saved map URL should follow the current official route, not an old timetable forever.
+      const latestRoute = await loadRouteData(latestFile);
+      if (latestRoute.route.route_id !== routeData.route.route_id) throw new Error("更新された系統の識別子が一致しません。");
+      routeFile = latestFile;
+      routeData = latestRoute;
+      const url = new URL(window.location.href);
+      url.searchParams.set("route_file", routeFile);
+      window.history.replaceState(null, "", url);
     }
     const files = sharedPlatformRouteFiles(dataset, stopId, routeFile);
     const loadedRoutes = [{ routeFile, routeData }];
