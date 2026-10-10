@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#0a5ea8">
-  <meta name="description" content="選択した都バス系統の停留所と走行経路を道路地図上に表示">
+  <meta name="description" content="選択系統と同じ乗り場を使う関連系統の運行バス・停留所・走行経路を地図上に表示">
   <title>路線マップ | 都バスナビ</title>
   <link rel="manifest" href="./manifest.webmanifest">
   <link rel="icon" href="./icons/icon-192.png">
@@ -19,13 +19,14 @@
       <div class="map-heading"><h1 id="mapTitle">路線マップ</h1><p id="mapSubtitle">路線データを読み込んでいます…</p></div>
     </div>
     <div id="patternWrap" class="map-controls" hidden>
-      <label for="patternSelect">方面</label><select id="patternSelect"></select>
+      <label for="patternSelect">表示範囲</label><select id="patternSelect"></select><button id="mapFitAll" type="button" aria-label="経路全体を地図に収める">全体</button>
     </div>
     <div id="routeLegend" class="route-legend" hidden></div>
     <p id="mapStatus" class="map-status" role="status" aria-live="polite">地図を準備しています…</p>
     <p id="busMapStatus" class="map-live-status" role="status" aria-live="polite">運行中のバスを取得しています…</p>
+    <details class="map-vehicle-details"><summary id="mapVehicleSummary">表示中の車両 0台</summary><div id="mapVehicleList" class="map-vehicle-list"></div></details>
   </header>
-  <main id="routeMap" aria-label="選択した系統の道路地図"></main>
+  <main id="routeMap" aria-label="選択系統と同じ乗り場を使う関連系統のバス地図"></main>
   <noscript>路線マップの表示にはJavaScriptを有効にしてください。</noscript>
   <script type="module" src="./js/route-map.js"></script>
 </body>

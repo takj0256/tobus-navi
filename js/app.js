@@ -412,7 +412,7 @@ function routeSummaryRow(group, platform, route) {
       ${favorite ? `<span class="route-state">お気に入り</span>` : recent ? `<span class="route-state">最近</span>` : ""}
     </button>
     <a class="route-map-link" href="${escapeHtml(routeMapHref(route, platform.stop_id))}"
-      aria-label="${escapeHtml(route.route_name || "系統")} ${escapeHtml(displayHeadsign(route.headsign))}の路線図を地図で見る">地図</a>
+      aria-label="${escapeHtml(route.route_name || "系統")}と同じのりばの運行バスを地図で見る">地図</a>
     <button class="favorite-button compact-favorite" type="button" data-favorite-action data-group-id="${escapeHtml(group.group_id)}"
       data-stop-id="${escapeHtml(platform.stop_id)}" data-route-key="${escapeHtml(routeKey)}"
       aria-label="お気に入り${favorite ? "から解除" : "に追加"}" aria-pressed="${favorite}">★</button>
@@ -456,7 +456,7 @@ async function openPlatformDetail(groupId, stopId, preferredRouteKey = "") {
   elements.platformRouteSummary.innerHTML = routes.map((route) => (
     `<span class="route-filter-chip"><b>${escapeHtml(route.route_name || "系統")}</b>${escapeHtml(displayHeadsign(route.headsign))}
       <a class="route-chip-map-link" href="${escapeHtml(routeMapHref(route, platformSelection.platform.stop_id))}"
-        aria-label="${escapeHtml(route.route_name || "系統")} ${escapeHtml(displayHeadsign(route.headsign))}の路線図を地図で見る">地図で見る ›</a></span>`
+        aria-label="${escapeHtml(route.route_name || "系統")}と同じのりばの運行バスを地図で見る">地図で見る ›</a></span>`
   )).join("");
   elements.routeDetailStatus.textContent = "時刻表データを読み込んでいます…";
   elements.liveBusList.innerHTML = loadingMarkup("複数系統のリアルタイム情報を準備しています");

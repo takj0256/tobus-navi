@@ -1,4 +1,4 @@
-const CACHE_NAME = "tobus-navi-v21";
+const CACHE_NAME = "tobus-navi-v22";
 const APP_SHELL = [
   "./",
   "./index.html",

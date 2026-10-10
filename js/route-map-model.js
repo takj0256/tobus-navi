@@ -1,3 +1,6 @@
+import { estimateVehicleProgress } from "./realtime.js";
+import { formatTimestampClock } from "./timetable.js";
+
 export function isValidRouteFile(value) {
   return /^routes\/route-[a-f0-9]{16}\.json$/.test(String(value || ""));
 }
@@ -13,7 +16,7 @@ export function buildRoutePatterns(routeData, { directionId = "", headsign = "" 
   for (const trip of trips) {
     const stopIds = (trip.stop_times || []).map((item) => item[0]).filter(Boolean);
     if (stopIds.length < 2) continue;
-    const key = `${trip.shape_id || ""}|${stopIds.join(">")}`;
+    const key = routePatternKey(trip, stopIds);
     const current = patterns.get(key);
     if (current) {
       current.tripCount += 1;
@@ -23,7 +26,7 @@ export function buildRoutePatterns(routeData, { directionId = "", headsign = "" 
       key,
       shapeId: trip.shape_id || "",
       headsign: trip.headsign || "",
-      directionId: String(trip.direction_id || ""),
+      directionId: String(trip.direction_id ?? ""),
       stopIds,
       tripCount: 1,
     });
@@ -122,7 +125,99 @@ export function describeRoutePattern(routeData, pattern) {
 export function tripMatchesRoutePattern(trip, pattern) {
   const stopIds = (trip?.stop_times || []).map((item) => item[0]).filter(Boolean);
   if (stopIds.length < 2 || !pattern) return false;
-  return `${trip.shape_id || ""}|${stopIds.join(">")}` === pattern.key;
+  return routePatternKey(trip, stopIds) === pattern.key;
+}
+
+function routePatternKey(trip, stopIds) {
+  return JSON.stringify([String(trip.direction_id ?? ""), trip.headsign || "", trip.shape_id || "", stopIds]);
+}
+
+// 同名停留所や反対側の乗り場を混ぜず、同じstop_idの路線ファイルだけを読む。
+export function sharedPlatformRouteFiles(dataset, stopId, primaryFile) {
+  const files = new Set(isValidRouteFile(primaryFile) ? [primaryFile] : []);
+  if (!stopId) return [...files];
+  for (const group of dataset?.stop_groups || []) {
+    for (const platform of group.platforms || []) {
+      if (platform.stop_id !== stopId) continue;
+      for (const route of platform.routes || []) {
+        if (isValidRouteFile(route.route_file)) files.add(route.route_file);
+      }
+    }
+  }
+  return [...files];
+}
+
+export function buildMapRouteEntries(loadedRoutes, { primaryFile, stopId = "" } = {}) {
+  return loadedRoutes.flatMap(({ routeFile, routeData }) => {
+    // 選択系統は全方面。追加系統はこの乗り場を実際に使う便だけ。
+    const trips = (routeData.trips || []).filter((trip) => routeFile === primaryFile
+      || (stopId && (trip.stop_times || []).some((stop) => stop[0] === stopId)));
+    const patterns = buildRoutePatterns({ ...routeData, trips });
+    if (!patterns.length) return [];
+    return [{ routeFile, routeData, allowUnmatchedPosition: routeFile === primaryFile,
+      trips: new Map(trips.map((trip) => [trip.trip_id, trip])),
+      patterns, groups: buildRoutePatternGroups(patterns) }];
+  });
+}
+
+export function selectMapVehicles(entries, feed, { nowMs = Date.now(), maxAgeMs = 300_000 } = {}) {
+  const result = { vehicles: [], unmatchedTrips: 0, observedPositions: 0, unlocated: 0, stale: 0 };
+  const seen = new Set();
+  const timestamp = (vehicle) => Number(vehicle.timestamp || feed?.timestamp || 0) * 1000;
+  const candidates = [...(feed?.vehicles || [])].sort((a, b) => timestamp(b) - timestamp(a));
+  for (const vehicle of candidates) {
+    const key = vehicle.vehicle?.id || vehicle.entityId;
+    if (key && seen.has(key)) continue;
+    if (key) seen.add(key);
+    const routeId = vehicle.trip?.routeId;
+    const entry = entries.find((item) => (!routeId || String(item.routeData.route?.route_id) === String(routeId))
+      && item.trips.has(vehicle.trip?.tripId));
+    // 対象系統の未照合便は「走行車両なし」へ黙って落とさない。
+    const related = entry || (routeId && entries.some((item) => String(item.routeData.route?.route_id) === String(routeId)));
+    if (!related) continue;
+    const time = timestamp(vehicle);
+    if (!Number.isFinite(time) || time <= 0 || nowMs - time > maxAgeMs || time - nowMs > 60_000) {
+      result.stale += 1;
+      continue;
+    }
+    if (!entry) {
+      // 静的データにはあるが乗り場/方面の対象外の便と、未知の便を区別する。
+      const known = entries.some((item) => (item.routeData.trips || []).some((trip) => trip.trip_id === vehicle.trip?.tripId));
+      if (!known) {
+        result.unmatchedTrips += 1;
+        const primaryEntry = entries.find((item) => item.allowUnmatchedPosition
+          && String(item.routeData.route?.route_id) === String(routeId));
+        const coordinate = [vehicle.position?.latitude, vehicle.position?.longitude];
+        // 配信で系統が確定した選択系統だけ。行き先や共有乗り場の通過は推測しない。
+        if (primaryEntry && coordinate.every(Number.isFinite) && validCoordinate(coordinate)) {
+          result.observedPositions += 1;
+          result.vehicles.push({ vehicle, entry: primaryEntry, coordinate,
+            routeName: primaryEntry.routeData.route?.route_name || "都バス", headsign: "行き先未照合",
+            observedOnly: true, estimate: { currentLabel: "配信位置（停留所イベント・経路未照合）",
+              updatedAt: formatTimestampClock(time) } });
+        }
+      }
+      continue;
+    }
+    const trip = entry.trips.get(vehicle.trip.tripId);
+    const pattern = entry.patterns.find((item) => tripMatchesRoutePattern(trip, item));
+    if (!pattern) continue; // 明示的な方面フィルタの対象外
+    const estimate = estimateVehicleProgress({ ...vehicle, timestamp: time / 1000 }, trip, entry.routeData,
+      pattern.stopIds.at(-1), nowMs);
+    const coordinate = estimate && coordinateForVehicleEstimate(entry.routeData, pattern, estimate);
+    if (!coordinate) { result.unlocated += 1; continue; }
+    result.vehicles.push({ vehicle, trip, entry, estimate, coordinate,
+      routeName: entry.routeData.route?.route_name || "都バス", headsign: trip.headsign || pattern.headsign || "行き先不明" });
+  }
+  return result;
+}
+
+export function mapMarkerOffset(index) {
+  // 6台ごとに同じ位置へ戻る旧オフセットを廃止。全台は一覧からも選べる。
+  if (!index) return [0, 0];
+  const pair = Math.ceil(index / 2);
+  const row = Math.ceil(pair / 2) * (pair % 2 ? 1 : -1);
+  return [index % 2 ? -65 : 65, row * 48];
 }
 
 export function coordinateForVehicleEstimate(routeData, pattern, estimate) {
