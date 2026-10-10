@@ -1,5 +1,17 @@
 import { haversineMeters } from "./geo.js";
 
+export function describeGtfsRefresh(status, revision, now = Date.now()) {
+  const checked = Date.parse(status?.checked_at);
+  if (status?.status !== "validated" || !Number.isFinite(checked)) return "GTFS更新確認：未確認";
+  const stamp = (value) => new Date(value).toLocaleString("ja-JP", { timeZone: "Asia/Tokyo" });
+  const stale = now - checked > 36 * 3600 * 1000 || checked - now > 60 * 1000;
+  const changed = revision && status.revision && revision !== status.revision;
+  return `公式GTFS確認：${stamp(checked)}${stale ? "（更新確認が古い／時計要確認）" : ""}`
+    + `・停留所監査：${status.weekly_audit?.checked_at ? stamp(status.weekly_audit.checked_at) : "未確認"}`
+    + (changed ? "・新版があります。最新データを読み込んでください。" : "")
+    + "・工事等の臨時移設は公式データ未反映の場合があります。";
+}
+
 export async function loadDataset(url = "./data/transit-index.json") {
   const response = await fetch(url, { cache: "no-cache" });
   if (!response.ok) {

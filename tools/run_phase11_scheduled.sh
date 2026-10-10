@@ -10,8 +10,18 @@ if ! flock -n 9; then
 fi
 today="$(TZ=Asia/Tokyo date +%F)"
 marker="$batch_root/aggregation-success-date"
+refresh_gtfs() {
+  # Release the aggregation lock before the independent timetable publication.
+  flock -u 9
+  if [[ -f "$batch_root/gtfs-refresh/enabled" ]]; then
+    if ! bash "$batch_root/gtfs-refresh/run_gtfs_refresh.sh" "$batch_root/gtfs-refresh"; then
+      echo "$(date -Is) GTFS refresh failed; aggregation result unchanged; see gtfs-refresh/refresh.log"
+    fi
+  fi
+}
 if [[ -f "$marker" ]] && [[ "$(<"$marker")" == "$today" ]]; then
   echo "$(date -Is) scheduled aggregation skipped: already succeeded $today"
+  refresh_gtfs
   exit 0
 fi
 echo "$(date -Is) scheduled aggregation starting for $today"
@@ -31,5 +41,7 @@ if bash ./tools/run_phase11_local_aggregation.sh; then
 else
   code=$?
   echo "$(date -Is) scheduled aggregation failed (exit $code)"
+  refresh_gtfs
   exit "$code"
 fi
+refresh_gtfs

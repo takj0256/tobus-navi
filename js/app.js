@@ -6,6 +6,7 @@ import {
 } from "./geo.js";
 import {
   loadDataset,
+  describeGtfsRefresh,
   loadRouteData,
   nearbyStopGroups,
   searchStopGroups,
@@ -119,6 +120,23 @@ async function init() {
     elements.datasetLabel.textContent = `${meta.dataset_name || "都バスGTFS-JP"}（${state.dataset.stop_groups.length}停留所名）`;
     elements.datasetUpdatedAt.textContent = generatedAt;
     elements.datasetSummary.textContent = `データ生成：${generatedAt}`;
+    const refreshStatus = async () => {
+      const label = document.getElementById("gtfsRefreshStatus");
+      if (!label) return;
+      try {
+        const response = await fetch("./data/gtfs-status.json", { cache: "no-cache" });
+        if (!response.ok) throw new Error("GTFS status unavailable");
+        label.textContent = describeGtfsRefresh(await response.json(), meta.gtfs_revision);
+      } catch {
+        label.textContent = "GTFS更新確認：未確認（通信失敗）。保存済みの時刻表を使用しています。";
+      }
+    };
+    void refreshStatus();
+    window.setInterval(refreshStatus, 5 * 60 * 1000);
+    document.addEventListener("visibilitychange", () => {
+      if (!document.hidden) void refreshStatus();
+    });
+    document.getElementById("reloadGtfsButton")?.addEventListener("click", () => window.location.reload());
     hydrateStoredCollections();
     renderFavorites();
     renderRecents();
