@@ -40,7 +40,7 @@ import {
 import { fetchPhase11Estimates, phase11SegmentKey } from "./phase11.js";
 import { classifyVehicleType } from "./vehicle-type.js";
 import {
-  buildApproachLanes,
+  buildPlatformApproachBoard,
   combinedVehicleKey,
   mergePlatformDepartures,
   mergePlatformTimetable,
@@ -724,45 +724,50 @@ function renderApproachLanes(vehicles) {
     elements.approachLaneList.innerHTML = "";
     return;
   }
-  const lanes = buildApproachLanes(
+  const board = buildPlatformApproachBoard(
     state.activeRouteEntries,
     vehicles,
     state.activeSelection.platform.stop_id,
     7,
   );
-  if (!lanes.length) {
+  if (!board.stops.length) {
     elements.approachLaneList.innerHTML = `<p class="empty-message">停留所列を生成できませんでした。</p>`;
     return;
   }
 
-  elements.approachLaneList.innerHTML = lanes.map((lane) => `
-    <article class="approach-lane">
+  elements.approachLaneList.innerHTML = `
+    <article class="approach-lane shared-approach-board">
       <header class="approach-lane-header">
-        <span class="approach-route-badge">${escapeHtml(lane.route.route_name || "系統")}</span>
-        <strong>${escapeHtml(displayHeadsign(lane.route.headsign))}</strong>
-        <small>${lane.markers.length ? `${lane.markers.length}台接近中` : "接近車両なし"}</small>
+        <strong>こののりばへの接近情報</strong>
+        <small>${board.markers.length ? `${board.markers.length}台接近中` : "接近車両なし"}</small>
       </header>
-      <div class="approach-scroll" role="region" aria-label="${escapeHtml(lane.route.route_name || "系統")} ${escapeHtml(displayHeadsign(lane.route.headsign))}の停留所間推定位置">
+      <div class="approach-scroll" role="region" aria-label="同じのりばへ向かう全系統・行き先の停留所間推定位置" tabindex="0">
         <div class="approach-track">
-          ${lane.stops.map((stop, index) => {
-            const markers = lane.markers.filter((marker) => marker.lane_index === index);
+          ${board.columns.map((column) => `<div class="approach-column">${column.map((stop) => {
+            const markers = board.markers.filter((marker) => marker.node_id === stop.node_id);
+            const downstream = stop.downstream_node_ids.map((id) => board.stops.find((item) => item.node_id === id)?.stop_name || "").filter(Boolean);
             return `<div class="approach-stop ${stop.is_target ? "target" : ""}">
-              <div class="approach-marker-stack">${markers.map((marker) => {
-                const vehicleType = classifyVehicleType(marker.vehicle_label);
-                return `<button class="approach-bus-marker ${vehicleType.key} ${marker.vehicle_id === state.selectedVehicleId ? "selected" : ""}" type="button"
-                  data-vehicle-id="${escapeHtml(marker.vehicle_id)}" style="--segment-offset:${Number(marker.segment_offset || 0).toFixed(3)}" aria-label="${escapeHtml(marker.vehicle_label)}、${escapeHtml(vehicleType.label)}、${escapeHtml(marker.eta_label || (marker.minutes === 0 ? "まもなく" : `約${marker.minutes}分`))}">
-                  <span aria-hidden="true">${escapeHtml(vehicleType.marker)}</span><small>${escapeHtml(marker.eta_label || (marker.minutes === 0 ? "まもなく" : `${marker.minutes}分`))}</small>
-                </button>`;
-              }).join("")}</div>
               <span class="approach-dot" aria-hidden="true"></span>
               <span class="approach-stop-name">${escapeHtml(stop.stop_name)}</span>
               ${stop.is_target ? `<span class="approach-target-label">乗車停留所</span>` : ""}
+              ${downstream.length ? `<small class="approach-connection">→ ${escapeHtml(downstream.join(" ／ "))}</small>` : ""}
+              <div class="approach-marker-stack">${markers.map((marker) => {
+                const vehicleType = classifyVehicleType(marker.vehicle_label);
+                return `<button class="approach-bus-marker ${vehicleType.key} ${marker.vehicle_id === state.selectedVehicleId ? "selected" : ""}" type="button"
+                  data-vehicle-id="${escapeHtml(marker.vehicle_id)}" aria-label="${escapeHtml(marker.route_name)}、${escapeHtml(displayHeadsign(marker.headsign))}、${escapeHtml(marker.vehicle_label)}、${escapeHtml(marker.current_label || "位置推定中")}、${escapeHtml(marker.eta_label || (marker.minutes === 0 ? "まもなく" : `約${marker.minutes}分`))}">
+                  <span class="approach-bus-identity"><span aria-hidden="true">${escapeHtml(vehicleType.marker)}</span><b>${escapeHtml(marker.route_name)}</b></span>
+                  <span class="approach-bus-destination">${escapeHtml(displayHeadsign(marker.headsign))}</span>
+                  <small>${escapeHtml(marker.eta_label || (marker.minutes === 0 ? "まもなく" : `${marker.minutes}分`))}・${marker.stops_away}停留所前</small>
+                  <small class="approach-bus-location">${marker.is_overflow ? "表示範囲より手前：" : ""}${escapeHtml(marker.current_label || "位置推定中")}</small>
+                  ${marker.is_moving ? `<span class="approach-segment-progress" role="img" aria-label="次の停留所へ向かう区間の推定進行率 ${Math.round(Math.max(0, Math.min(1, marker.segment_progress)) * 100)}パーセント"><span style="width:${Math.max(0, Math.min(1, marker.segment_progress)) * 100}%"></span></span>` : ""}
+                </button>`;
+              }).join("")}</div>
             </div>`;
-          }).join("")}
-          ${lane.hidden_stop_count > 0 ? `<div class="approach-overflow"><span>←</span><small>さらに${lane.hidden_stop_count}停留所前</small></div>` : ""}
+          }).join("")}</div>`).join("")}
         </div>
       </div>
-    </article>`).join("");
+      <p class="approach-board-note">共通区間はまとめて表示。分岐は別枠、矢印は次の停留所です。${board.hidden_stop_count > 0 ? "表示範囲より手前のバスも端の枠に表示します。" : ""}</p>
+    </article>`;
 
   bindVehicleButtons(elements.approachLaneList, vehicles);
 }
