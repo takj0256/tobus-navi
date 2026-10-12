@@ -1,22 +1,24 @@
 import { buildWeatherAdjustmentProfile, buildWeeklyProfile } from "../js/phase11.js";
+import { officialHolidayDayType } from '../js/japan-holidays.js';
 
 export function buildLocalProfiles(payloads, nowMs = Date.now()) {
   const cutoff = nowMs - 28 * 86_400_000;
   const groups = new Map();
   for (const payload of payloads || []) {
     for (const compact of payload?.groups || []) {
-      const key = `${compact.segment_key}|${compact.day_type}|${compact.time_bin}`;
-      const samples = groups.get(key) || [];
       for (const value of compact.samples || []) {
         const seconds = Number(value[0]);
         const timestampMs = Number(value[1]);
         if (!Number.isFinite(seconds) || !Number.isFinite(timestampMs) || timestampMs < cutoff) continue;
+        const dayType = officialHolidayDayType(timestampMs, compact.day_type);
+        const key = `${compact.segment_key}|${dayType}|${compact.time_bin}`;
+        const samples = groups.get(key) || [];
         samples.push({
           seconds, timestampMs, anomalous: false, event: compact,
           weatherClass: value[2] || null, temperatureBand: value[3] || null,
         });
+        groups.set(key, samples);
       }
-      groups.set(key, samples);
     }
   }
 

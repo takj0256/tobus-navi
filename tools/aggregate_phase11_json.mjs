@@ -6,6 +6,7 @@ import { basename, resolve } from "node:path";
 import { buildLocalProfiles } from "./phase11-local-model.js";
 import { buildHistoryProfiles } from "./phase11-history-model.js";
 import { summarizeInputQuality } from './phase11-approved-gaps.mjs';
+import { JAPAN_HOLIDAY_CALENDAR_VERSION } from '../js/japan-holidays.js';
 
 const [inputDir, outputDir] = process.argv.slice(2);
 if (!inputDir || !outputDir) {
@@ -63,6 +64,7 @@ const manifest = {
   generation,
   generated_at: generatedAt.toISOString(),
   source_objects: result.sourceObjects,
+  holiday_calendar: JAPAN_HOLIDAY_CALENDAR_VERSION,
   ...(historyMode ? { candidate_only: true, strategy: result.strategy, limitations: result.limitations } : {}),
   source_dates: files.map((file) => basename(file, ".json")),
   ...(summarizeInputQuality(payloads) ? { data_quality: summarizeInputQuality(payloads) } : {}),

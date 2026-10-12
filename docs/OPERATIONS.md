@@ -1,5 +1,11 @@
 # 開発と運用の引継ぎ
 
+## 公式祝日の統計区分修正（2026-10-13、D31）
+
+`js/japan-holidays.js`は内閣府公表2026/2027年の祝日・休日を収録。Phase11共通判定とPCの28日集計を同じカレンダーへ揃え、旧dailyの公式祝日標本だけ実時刻から再分類する。元daily/history/rawは変更しない。manifestのholiday_calendarで適用版を確認。2028年分は2027年の公式公表後に更新する。回帰試験はJST境界/振替/国民の休日/任意追加休日/混在旧グループ/入力不変を含む。
+
+反映時は両バッチflock下でjs/phase11.js・js/japan-holidays.js・tools/phase11-local-model.js・tools/phase11-history-model.js・tools/aggregate_phase11_json.mjsの旧状態をGit外に退避し、限定コピー・構文・内容一致を検証。Worker配信前のdeployment/settingsも退避する。PWAは新依存をAPP_SHELLに追加しキャッシュv24で配信。切り戻しは対象5ファイルを退避状態へ戻し、Workerを記録した旧版へrollback、PWAは差分revert＋新キャッシュ番号とする。公開済みraw/daily/currentの削除や自動巻戻しは行わない。既公開世代は旧区分のまま、次の定刻生成でカレンダー版とholiday/weekdayシャードの追随を確認する。
+
 ## 公式GTFSの日次更新
 
 `tools/run_phase11_scheduled.sh` の終了後フックと専用公開コピーを使用する。[GTFS更新・週次監査](GTFS_REFRESH.md)に端末設定、検証条件、停止/切り戻しを記載。ソース共有、集計コピーのラッパー反映、Pages公開の3段階を別々に確認する。main側PCのタスクは変更しない。

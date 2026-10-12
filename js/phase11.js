@@ -1,3 +1,5 @@
+import { isOfficialJapanHoliday } from './japan-holidays.js';
+
 const TOKYO_TIME_ZONE = "Asia/Tokyo";
 const TOKYO_PARTS_FORMATTER = new Intl.DateTimeFormat("en-US", {
   timeZone: TOKYO_TIME_ZONE,
@@ -19,7 +21,7 @@ export function phase11TimeBin(timestampMs = Date.now(), minutes = 15) {
 export function phase11DayType(timestampMs = Date.now(), holidayDateKeys = new Set()) {
   const parts = tokyoParts(timestampMs);
   const dateKey = `${parts.year}-${String(parts.month).padStart(2, "0")}-${String(parts.day).padStart(2, "0")}`;
-  if (holidayDateKeys?.has?.(dateKey) || parts.weekday === "Sun") return "holiday";
+  if (isOfficialJapanHoliday(dateKey) || holidayDateKeys?.has?.(dateKey) || parts.weekday === "Sun") return "holiday";
   if (parts.weekday === "Sat") return "saturday";
   return "weekday";
 }

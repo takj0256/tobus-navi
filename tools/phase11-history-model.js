@@ -1,4 +1,5 @@
 import { buildLocalProfiles } from './phase11-local-model.js';
+import { officialHolidayDayType } from '../js/japan-holidays.js';
 
 const DAY = 86400000;
 const clamp = (n, low, high) => Math.max(low, Math.min(high, n));
@@ -20,14 +21,15 @@ export function buildHistoryProfiles(payloads, nowMs = Date.now()) {
     if (!payload?.date_key || dates.has(payload.date_key)) throw Error('One revision per observation date is required');
     dates.add(payload.date_key);
     for (const g of payload.groups || []) {
-      const key = keyOf(g), item = groups.get(key) || { meta: g, samples: new Map() };
       for (const s of g.samples || []) {
         if (!Number.isFinite(s[0]) || s[0] < 15 || s[0] > 1800 || !Number.isFinite(s[1]) || s[1] >= nowMs) continue;
+        const meta = { ...g, day_type: officialHolidayDayType(s[1], g.day_type) };
+        const key = keyOf(meta), item = groups.get(key) || { meta, samples: new Map() };
         const id = s[5] ? `event:${s[5]}` : `legacy:${JSON.stringify(s)}`;
         if (item.samples.has(id) && JSON.stringify(item.samples.get(id)) !== JSON.stringify(s)) throw Error('Conflicting event revision');
         item.samples.set(id, s);
+        groups.set(key, item);
       }
-      groups.set(key, item);
     }
   }
   const recentPayload = { groups: [...groups.values()].map(x => ({ ...x.meta, samples: [...x.samples.values()].filter(s => s[1] >= nowMs - 28 * DAY) })) };
