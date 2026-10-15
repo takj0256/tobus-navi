@@ -1,5 +1,11 @@
 # 開発と運用の引継ぎ
 
+## 原本本文の鮮度とライブ付加（2026-10-16、D32）
+
+PCのprocess_phase11_raw.mjsは予定分キーに加え本文feed timestampの5分鮮度/未来30秒を検査する。古い入力も保存・観測抽出は続け、現在の天気/異常/交通付加だけを省略する。新しいfeed内の古い車両イベントも交通bridge送信直前に除外。statusのlast_feed_freshnessとskipped_stale_traffic_requests、replayed_without_live_enrichmentを併読する。前2項は導入前には存在せず、last_feed_freshnessは最終処理入力の検査であって現在の上流正常の証明ではない。
+
+反映は両flock下で旧processorとcheckpoint/status/D1予算をGit外退避し、processor1ファイルだけを内容一致/構文検査してコピーする。復旧後は通常2分タスクで新しいキーの処理、local/R2同一状態、新フィールド、backlog/pending0、エラーを確認。悪化時は両ロック下で旧processorだけを戻し、進んだcheckpoint・予算・公開済み入力を巻き戻さない。旧コードは追加診断フィールドを無視できる。Worker/PWAデプロイ、統計再生成/current切替、予算リセットは不要。上流の古い内容と取得例外の根因/過去の付加の訂正は別の残件。
+
 ## 公式祝日の統計区分修正（2026-10-13、D31）
 
 `js/japan-holidays.js`は内閣府公表2026/2027年の祝日・休日を収録。Phase11共通判定とPCの28日集計を同じカレンダーへ揃え、旧dailyの公式祝日標本だけ実時刻から再分類する。元daily/history/rawは変更しない。manifestのholiday_calendarで適用版を確認。2028年分は2027年の公式公表後に更新する。回帰試験はJST境界/振替/国民の休日/任意追加休日/混在旧グループ/入力不変を含む。

@@ -43,6 +43,23 @@ export function reserveD1Operation(budget, sql) {
   return kind;
 }
 
+export function isLiveObservation(timestampMs, nowMs) {
+  const age = nowMs - timestampMs;
+  return Number.isFinite(timestampMs) && timestampMs > 0
+    && Number.isFinite(age) && age >= -30000 && age <= 300000;
+}
+
+export function rawFeedFreshness(bytes, scheduledMs, nowMs) {
+  const feed = decodeGtfsRealtime(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength));
+  const feedMs = Number(feed.timestamp) * 1000;
+  const valid = Number.isFinite(feedMs) && feedMs > 0;
+  return {
+    feed_at: valid ? new Date(feedMs).toISOString() : null,
+    age_seconds: valid ? (nowMs - feedMs) / 1000 : null,
+    live_enrichment: isLiveObservation(scheduledMs, nowMs) && isLiveObservation(feedMs, nowMs),
+  };
+}
+
 export function validateForwardLateFeed(bytes, state, now) {
   const feed = decodeGtfsRealtime(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength));
   const time = Number(feed.timestamp) * 1000;
@@ -150,8 +167,11 @@ export async function processRaw({ root, client, now = Date.now(), maxObjects = 
     await fs.rename(localRaw + '.tmp', localRaw);
     if (sha256(await fs.readFile(localRaw)) !== sha256(compressed)) throw Error('Local raw archive verification failed');
     active = structuredClone(cp);
-    const fresh = now - time <= 5 * 60000;
-    if (!fresh && Date.parse(active.state.weather?.fetched_at || '') > time) delete active.state.weather;
+    const freshness = rawFeedFreshness(bytes, time, now);
+    const fresh = freshness.live_enrichment;
+    active.last_feed_freshness = { key: object.key, checked_at: new Date(now).toISOString(), ...freshness };
+    const observationTime = Date.parse(freshness.feed_at || '') || time;
+    if (!fresh && Date.parse(active.state.weather?.fetched_at || '') > observationTime) delete active.state.weather;
     await runScheduledCollection({
       EVENT_BUCKET: bucket, DB: fresh ? { prepare: sql => statement(sql) } : undefined,
       WEATHER_ENABLED: fresh ? 'true' : 'false', R2_MAINTENANCE_ENABLED: 'false',
@@ -159,6 +179,12 @@ export async function processRaw({ root, client, now = Date.now(), maxObjects = 
       // PC network latency can exceed the Worker-oriented 5s default.
       WEATHER_TIMEOUT_MS: 15000,
       QUERY_TRAFFIC: async (event, anomaly) => {
+        // A fresh feed may still contain old vehicle observations. Never ask for
+        // current traffic for an event the bridge will reject as historical.
+        if (!isLiveObservation(Number(event.timestamp_ms), Date.now())) {
+          active.skipped_stale_traffic_requests = (active.skipped_stale_traffic_requests || 0) + 1;
+          return;
+        }
         if (!config.processor_token || !config.worker_url) throw Error('Traffic bridge configuration missing');
         const r = await fetchImpl(config.worker_url + '/internal/phase11/traffic', {
           method: 'POST', headers: { Authorization: `Bearer ${config.processor_token}`, 'Content-Type': 'application/json' },
@@ -203,6 +229,8 @@ export async function processRaw({ root, client, now = Date.now(), maxObjects = 
     missing_raw_keys: missingKeys,
     unapproved_missing_capture_minutes: partialPolicy ? 0 : unapprovedMissingKeys(through, missingKeys).length,
     replayed_without_live_enrichment: cp.replayed_without_live_enrichment || 0,
+    last_feed_freshness: cp.last_feed_freshness || null,
+    skipped_stale_traffic_requests: cp.skipped_stale_traffic_requests || 0,
     pending_hours: Object.keys(cp.pending).length, weather_fetched_at: cp.state.weather?.fetched_at || null,
     weather_error: cp.state.weather_error || null, anomaly_error: cp.state.anomaly_error || null, d1_budget: budget };
   await atomicJson(path.join(root, 'status.json'), status);

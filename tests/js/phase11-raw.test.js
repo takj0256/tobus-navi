@@ -4,7 +4,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import worker, { runScheduledCollection, captureRawFeed, collectSegmentEvents } from '../../worker/worker.js';
-import { processRaw, rawTimestamp, mergeEvents, validateForwardLateFeed } from '../../tools/process_phase11_raw.mjs';
+import { processRaw, rawTimestamp, mergeEvents, validateForwardLateFeed, isLiveObservation, rawFeedFreshness } from '../../tools/process_phase11_raw.mjs';
 import { decodeGtfsRealtime } from '../../js/realtime.js';
 import { atomicJson, readJson } from '../../tools/phase11-storage.mjs';
 import { approvedMissingKeys } from '../../tools/phase11-approved-gaps.mjs';
@@ -13,8 +13,8 @@ function varint(n) { const a=[]; n=BigInt(n); while(n>127n){a.push(Number(n&127n
 const vi=(f,n)=>[...varint(f*8),...varint(n)];
 const msg=(f,a)=>[...varint(f*8+2),...varint(a.length),...a];
 const str=(f,s)=>msg(f,[...new TextEncoder().encode(s)]);
-function feed(time, seq) {
-  const vehicle=[...msg(1,[...str(1,'t'),...str(5,'r')]),...vi(3,seq),...vi(5,time/1000),...str(7,'s'+seq),...msg(8,str(1,'v'))];
+function feed(time, seq, vehicleTime=time) {
+  const vehicle=[...msg(1,[...str(1,'t'),...str(5,'r')]),...vi(3,seq),...vi(5,vehicleTime/1000),...str(7,'s'+seq),...msg(8,str(1,'v'))];
   return Buffer.from([...msg(1,[...str(1,'2.0'),...vi(3,time/1000)]),...msg(2,[...str(1,'e'),...msg(4,vehicle)])]);
 }
 async function fixture(t) {
@@ -196,6 +196,82 @@ test('PC weather enrichment tolerates a response slower than five seconds',async
   }});
   assert.equal(result.weather_error,null);
   assert.equal(result.weather_fetched_at,new Date(f.start+180000).toISOString());
+});
+
+test('recently stored raw with an old feed preserves events but never enriches with current weather',async t=>{
+  const f=await fixture(t);
+  f.values.set('raw-v1/2026-09-23/00/00.pb',feed(f.start-600000,1));
+  f.values.set('raw-v1/2026-09-23/00/01.pb',feed(f.start-540000,2));
+  let weatherRequests=0;
+  const result=await processRaw({...f,now:f.start+180000,fetchImpl:async()=>{
+    weatherRequests++;return Response.json({current:{temperature_2m:22}});
+  }});
+  assert.equal(weatherRequests,0);
+  assert.equal(result.replayed_without_live_enrichment,2);
+  const hour=JSON.parse(f.values.get('hourly/2026-09-23/00.json'));
+  assert.equal(hour.events.length,1);
+  assert.equal(hour.events[0].timestamp_ms,f.start-540000);
+  assert.equal(hour.events[0].seconds,60);
+  assert.equal(hour.events[0].weather,null);
+  assert.equal(result.last_feed_freshness.live_enrichment,false);
+  assert.equal(result.last_feed_freshness.feed_at,new Date(f.start-540000).toISOString());
+});
+
+test('live enrichment validates actual observation age, future skew and scheduled age separately',()=>{
+  const now=Date.parse('2026-09-23T00:10Z');
+  for(const age of [0,300000,-30000])assert.equal(isLiveObservation(now-age,now),true);
+  for(const age of [300001,-30001])assert.equal(isLiveObservation(now-age,now),false);
+  for(const v of [0,NaN,Infinity])assert.equal(isLiveObservation(v,now),false);
+  assert.equal(rawFeedFreshness(feed(now-60000,2),now-120000,now).live_enrichment,true);
+  assert.equal(rawFeedFreshness(feed(now-600000,2),now-120000,now).live_enrichment,false);
+  assert.equal(rawFeedFreshness(feed(now-60000,2),now-600001,now).live_enrichment,false);
+  assert.equal(rawFeedFreshness(feed(now+60000,2),now-120000,now).live_enrichment,false);
+});
+
+test('stale feed removes only future weather and retains a genuinely prior weather snapshot',async t=>{
+  const f=await fixture(t),observation=f.start-600000;
+  f.values.set('raw-v1/2026-09-23/00/00.pb',feed(observation,1));
+  f.values.set('raw-v1/2026-09-23/00/01.pb',feed(observation+60000,2));
+  f.values.set('state/latest.json',Buffer.from(JSON.stringify({vehicles:{},candidates:[],weather:{fetched_at:new Date(observation-60000).toISOString(),weather_class:'rain'}})));
+  await processRaw({...f,now:f.start+180000,fetchImpl:async()=>{throw Error('no current enrichment');}});
+  assert.equal(JSON.parse(f.values.get('hourly/2026-09-23/00.json')).events[0].weather.weather_class,'rain');
+});
+
+test('stale feed never reuses a weather snapshot taken after its observation',async t=>{
+  const f=await fixture(t),observation=f.start-600000;
+  f.values.set('raw-v1/2026-09-23/00/00.pb',feed(observation,1));
+  f.values.set('raw-v1/2026-09-23/00/01.pb',feed(observation+60000,2));
+  f.values.set('state/latest.json',Buffer.from(JSON.stringify({vehicles:{},candidates:[],weather:{fetched_at:new Date(f.start).toISOString(),weather_class:'rain'}})));
+  await processRaw({...f,now:f.start+180000,fetchImpl:async()=>{throw Error('no current enrichment');}});
+  assert.equal(JSON.parse(f.values.get('hourly/2026-09-23/00.json')).events[0].weather,null);
+});
+
+test('fresh feed containing a historical vehicle event does not call the live traffic bridge',async t=>{
+  const f=await fixture(t),now=f.start+180000;
+  t.mock.method(Date,'now',()=>now);
+  await atomicJson(path.join(f.root,'config.json'),{start_at:new Date(f.start).toISOString(),worker_url:'https://bridge.invalid',processor_token:'fixture'});
+  f.values.set('raw-v1/2026-09-23/00/00.pb',feed(f.start,1,now-900000));
+  f.values.set('raw-v1/2026-09-23/00/01.pb',feed(f.start+60000,2,now-540000));
+  f.values.set('state/latest.json',Buffer.from(JSON.stringify({vehicles:{},candidates:[],weather:{fetched_at:new Date(now).toISOString(),weather_class:'rain'}})));
+  let bridgeRequests=0;
+  f.client.operationalQuery=async sql=>[{results:/SELECT/i.test(sql)?[{segment_key:'r||s1>s2',sample_count:20,confidence:0.9,profile_seconds:30}]:[]}];
+  const result=await processRaw({...f,now,fetchImpl:async()=>{bridgeRequests++;return new Response('Invalid or stale event',{status:400});}});
+  assert.equal(bridgeRequests,0);
+  assert.equal(result.skipped_stale_traffic_requests,1);
+  assert.equal(result.anomaly_error,null);
+  assert.equal(JSON.parse(f.values.get('hourly/2026-09-23/00.json')).events[0].seconds,360);
+});
+
+test('a fresh confirmed vehicle event still reaches the traffic bridge',async t=>{
+  const f=await fixture(t),now=f.start+180000;
+  t.mock.method(Date,'now',()=>now);
+  await atomicJson(path.join(f.root,'config.json'),{start_at:new Date(f.start).toISOString(),worker_url:'https://bridge.invalid',processor_token:'fixture'});
+  f.values.set('raw-v1/2026-09-23/00/00.pb',feed(f.start,1,now-420000));
+  f.values.set('raw-v1/2026-09-23/00/01.pb',feed(now-60000,2,now-60000));
+  f.values.set('state/latest.json',Buffer.from(JSON.stringify({vehicles:{},candidates:[],weather:{fetched_at:new Date(now).toISOString(),weather_class:'rain'}})));
+  f.client.operationalQuery=async sql=>[{results:/SELECT/i.test(sql)?[{segment_key:'r||s1>s2',sample_count:20,confidence:0.9,profile_seconds:30}]:[]}];
+  let requests=0;const result=await processRaw({...f,now,fetchImpl:async()=>{requests++;return Response.json({updated:true});}});
+  assert.equal(requests,1);assert.equal(result.skipped_stale_traffic_requests,0);assert.equal(result.anomaly_error,null);
 });
 
 test('daily gate allows the exact approved gap but still rejects another gap',async t=>{
