@@ -6,6 +6,8 @@ import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 import { pathToFileURL } from "node:url";
+import { PACKED_PROFILE_FORMAT } from '../js/phase11-profile-codec.js';
+import { validatePackedLocalObject } from './pack_phase11_profiles.mjs';
 
 const DEFAULT_ACCOUNT_ID = "280d634e84421957ce4f72c88ae47051";
 const DEFAULT_BUCKET = "tobus-phase11-events";
@@ -30,25 +32,31 @@ export async function publishPhase11Json(outputDir, options = {}) {
   const currentPayload = await fs.readFile(path.resolve(outputDir, "current.json"));
   const manifest = JSON.parse(currentPayload.toString("utf8"));
   if (manifest.candidate_only) throw new Error('History candidate has not passed production validation; publication denied');
-  if (manifest.format !== "phase11-profile-shards" || !manifest.generation) {
+  const packed = manifest.version === 2 && manifest.format === PACKED_PROFILE_FORMAT;
+  if ((!packed && (manifest.version !== 1 || manifest.format !== "phase11-profile-shards"))
+    || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(manifest.generation || '')
+    || !Number.isFinite(Date.parse(manifest.generated_at || ''))) {
     throw new Error("current.json is not a Phase 11 profile manifest");
   }
 
   const generationDir = path.resolve(outputDir, "generations", manifest.generation);
-  const objects = [
-    ...manifest.shards.map((shard) => ({ relativePath: shard.path, bytes: shard.bytes, sha256: shard.sha256 })),
-    { relativePath: manifest.weather.path, bytes: manifest.weather.bytes, sha256: manifest.weather.sha256 },
-  ];
-  for (const object of objects) await validateLocalObject(generationDir, object);
+  const descriptors = [...manifest.shards.map(d => ({...d,kind:'profiles'})),{...manifest.weather,kind:'weather_profiles'}];
+  if (packed) for (const d of descriptors) await validatePackedLocalObject(outputDir, d, manifest.generated_at, d.kind);
+  const objects = descriptors.flatMap(d => packed
+    ? [d.storage, ...(d.read_storage ? [d.read_storage] : [])].map(s=>({relativePath:s.key,bytes:s.bytes,sha256:s.sha256}))
+    : [{relativePath:d.path,bytes:d.bytes,sha256:d.sha256}]);
+  for (const object of objects) {
+    if (!packed) await validateLocalObject(generationDir, object);
+  }
 
   const generationPrefix = `${prefix}/generations/${manifest.generation}`;
   let uploaded = 0;
   let reused = 0;
   let completed = 0;
   await mapConcurrent(objects, concurrency, async (object) => {
-    const payload = await fs.readFile(safeResolve(generationDir, object.relativePath));
-    const key = `${generationPrefix}/${object.relativePath}`;
-    const response = options.resumeExisting === true ? await fetchWithRetry(`${apiBase}/${key}`, {
+    const payload = await fs.readFile(safeResolve(packed ? outputDir : generationDir, object.relativePath));
+    const key = packed ? `${prefix}/${object.relativePath}` : `${generationPrefix}/${object.relativePath}`;
+    const response = packed || options.resumeExisting === true ? await fetchWithRetry(`${apiBase}/${key}`, {
       headers: { Authorization: `Bearer ${await getToken()}` },
     }, `R2 GET ${key}`, { ...requestPolicy, allowMissing: true }) : null;
     if (response) {
@@ -57,23 +65,37 @@ export async function publishPhase11Json(outputDir, options = {}) {
       reused += 1;
     } else {
       await putObject(apiBase, key, payload, await getToken(), requestPolicy);
+      if (packed) await verifyObject(apiBase,key,payload,await getToken(),requestPolicy);
       uploaded += 1;
     }
     completed += 1;
     if (completed % 20 === 0 || completed === objects.length) {
-      process.stderr.write(options.resumeExisting === true
+      process.stderr.write(packed || options.resumeExisting === true
         ? `verified ${completed}/${objects.length} profile objects (${reused} reused)\n`
         : `uploaded ${completed}/${objects.length} profile objects\n`);
     }
   });
 
   const generationManifestPayload = await fs.readFile(safeResolve(generationDir, "manifest.json"));
+  if (!generationManifestPayload.equals(currentPayload)) throw new Error('Generation manifest and current differ');
+  if (packed) {
+    const existing = await fetchWithRetry(`${apiBase}/${generationPrefix}/manifest.json`, {
+      headers:{Authorization:`Bearer ${await getToken()}`},
+    },'R2 existing manifest',{...requestPolicy,allowMissing:true});
+    if(existing && !Buffer.from(await existing.arrayBuffer()).equals(generationManifestPayload)) throw new Error('Existing packed manifest differs');
+  }
   await putObject(apiBase, `${generationPrefix}/manifest.json`, generationManifestPayload, await getToken(), requestPolicy);
   await verifyObject(apiBase, `${generationPrefix}/manifest.json`, generationManifestPayload, await getToken(), requestPolicy);
 
   // current.json is the atomic publication pointer and must always be written last.
-  await putObject(apiBase, `${prefix}/current.json`, currentPayload, await getToken(), requestPolicy);
-  await verifyObject(apiBase, `${prefix}/current.json`, currentPayload, await getToken(), requestPolicy);
+  if (options.switchCurrent !== false) {
+    if (options.expectedCurrentGeneration) {
+      const response=await fetchWithRetry(`${apiBase}/${prefix}/current.json`,{headers:{Authorization:`Bearer ${await getToken()}`}},'R2 current guard',requestPolicy);
+      if((await response.json()).generation!==options.expectedCurrentGeneration)throw new Error('Current changed; refusing switch');
+    }
+    await putObject(apiBase, `${prefix}/current.json`, currentPayload, await getToken(), requestPolicy);
+    await verifyObject(apiBase, `${prefix}/current.json`, currentPayload, await getToken(), requestPolicy);
+  }
   return {
     bucket,
     prefix,
@@ -81,8 +103,9 @@ export async function publishPhase11Json(outputDir, options = {}) {
     sourceObjects: manifest.source_objects,
     profiles: manifest.profiles.count,
     weatherProfiles: manifest.weather_profiles.count,
-    uploadedObjects: uploaded + 2,
+    uploadedObjects: uploaded + (options.switchCurrent === false ? 1 : 2),
     reusedObjects: reused,
+    ...(packed ? {storageFormat:manifest.format,storageSummary:manifest.storage_summary,currentSwitched:options.switchCurrent!==false} : {}),
   };
 }
 
@@ -135,7 +158,8 @@ function integerOption(value, fallback, minimum, maximum) {
 async function putObject(apiBase, key, payload, token, requestPolicy) {
   await fetchWithRetry(`${apiBase}/${key}`, {
     method: "PUT",
-    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    // Do not set Content-Encoding: gzip: hashes describe the stored bytes.
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": key.endsWith('.gz') ? 'application/gzip' : 'application/json' },
     body: payload,
   }, `R2 PUT ${key}`, requestPolicy);
 }
@@ -180,12 +204,16 @@ async function fetchWithRetry(url, init, label, policy) {
 
 async function mapConcurrent(items, concurrency, operation) {
   let next = 0;
+  let failure;
   await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, async () => {
-    while (next < items.length) {
-      const index = next++;
-      await operation(items[index]);
-    }
+    try {
+      while (!failure && next < items.length) {
+        const index = next++;
+        await operation(items[index]);
+      }
+    } catch (error) { failure ||= error; }
   }));
+  if (failure) throw failure;
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {

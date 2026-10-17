@@ -1,5 +1,9 @@
 # 開発と運用の引継ぎ
 
+## 統計世代のgzip・共通ブロック（2026-10-17、D33）
+
+[v2保存形式・検証・切戻し](PHASE11_PROFILE_STORAGE_V2.md)を参照。2026-10-18時点はCPU受入未達で本番未適用、集計コピーは退避版へ復元済み、enabled印なし。今後の有効化ではv2の実オブジェクトを世代相対pathでなく`<prefix>/<storage.key>`と`read_storage.key`で確認する。生成日時は圧縮時に更新せず、旧completeや旧世代の圧縮を当日成功と判定しない。全件可逆検証とCPU/読込確認を先行し、互換reader→stage→currentの順に反映する。バッチルートの`profile-storage-v2.enabled`で次回生成を有効化する。退避済みv1 currentを先に復元してから旧readerへ戻す。raw/daily/history、D1予算、メインPCタスクは変更しない。旧世代削除/GCは別承認で、共有blobへ一律期限切れを設定しない。
+
 ## 原本本文の鮮度とライブ付加（2026-10-16、D32）
 
 PCのprocess_phase11_raw.mjsは予定分キーに加え本文feed timestampの5分鮮度/未来30秒を検査する。古い入力も保存・観測抽出は続け、現在の天気/異常/交通付加だけを省略する。新しいfeed内の古い車両イベントも交通bridge送信直前に除外。statusのlast_feed_freshnessとskipped_stale_traffic_requests、replayed_without_live_enrichmentを併読する。前2項は導入前には存在せず、last_feed_freshnessは最終処理入力の検査であって現在の上流正常の証明ではない。

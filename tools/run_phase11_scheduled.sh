@@ -34,6 +34,7 @@ cd "$batch_root/app"
 export PHASE11_HISTORY_DIR="$batch_root/history"
 export PHASE11_HISTORY_MODE=remote
 if [[ -f "$batch_root/raw-processor/config.json" ]]; then export PHASE11_RAW_DIR="$batch_root/raw-processor"; fi
+if [[ -f "$batch_root/profile-storage-v2.enabled" ]]; then export PHASE11_PROFILE_STORAGE=packed-v2; fi
 if bash ./tools/run_phase11_local_aggregation.sh; then
   printf '%s\n' "$today" > "$marker.tmp"
   mv "$marker.tmp" "$marker"

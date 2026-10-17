@@ -7,6 +7,7 @@ import { buildLocalProfiles } from "./phase11-local-model.js";
 import { buildHistoryProfiles } from "./phase11-history-model.js";
 import { summarizeInputQuality } from './phase11-approved-gaps.mjs';
 import { JAPAN_HOLIDAY_CALENDAR_VERSION } from '../js/japan-holidays.js';
+import { packProfileGeneration } from './pack_phase11_profiles.mjs';
 
 const [inputDir, outputDir] = process.argv.slice(2);
 if (!inputDir || !outputDir) {
@@ -82,9 +83,17 @@ const manifestPayload = `${JSON.stringify(manifest, null, 2)}\n`;
 await writeFile(resolve(generationDir, "manifest.json"), manifestPayload);
 await mkdir(outputDir, { recursive: true });
 await writeFile(resolve(outputDir, "current.json"), manifestPayload);
+let publishedGeneration = manifest.generation;
+if (process.env.PHASE11_PROFILE_STORAGE === 'packed-v2') {
+  const packed = await packProfileGeneration(outputDir, outputDir);
+  publishedGeneration = packed.generation;
+  console.log(JSON.stringify(packed));
+} else if (process.env.PHASE11_PROFILE_STORAGE && process.env.PHASE11_PROFILE_STORAGE !== 'legacy') {
+  throw new Error('Unknown profile storage mode');
+}
 console.log(JSON.stringify({
-  outputDir: generationDir,
-  generation: manifest.generation,
+  outputDir: resolve(outputDir, 'generations', publishedGeneration),
+  generation: publishedGeneration,
   generated_at: manifest.generated_at,
   source_objects: manifest.source_objects,
   source_dates: manifest.source_dates,

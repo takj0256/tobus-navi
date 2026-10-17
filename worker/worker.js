@@ -1,5 +1,7 @@
 import { decodeGtfsRealtime } from "../js/realtime.js";
 import { captureWithPolicy } from "./raw-capture.js";
+import { PACKED_PROFILE_FORMAT, validatePackedStorage, validatePackedPayload, unpackProfileRows } from '../js/phase11-profile-codec.js';
+import { decodePackedProfileObject } from './profile-storage-v2.js';
 import {
   buildCorrectionRatio,
   buildWeatherAdjustmentProfile,
@@ -521,8 +523,12 @@ async function loadProfilesForSegments(env, keys, atMs, holidays) {
 
 export async function readProfilesFromR2(bucket, keys, atMs, holidays = new Set(), env = {}) {
   const prefix = normalizedProfilePrefix(env.PROFILE_JSON_PREFIX || PROFILE_JSON_PREFIX);
+  // Operator-only immutable generation pin for canary validation before current switches.
+  const pin = env.PROFILE_MANIFEST_GENERATION;
+  if (pin && !/^[0-9A-Za-z][0-9A-Za-z._-]*$/.test(pin)) throw new Error('invalid Phase 11 pinned generation');
   const manifest = await readCachedR2Json(
-    bucket, `${prefix}/current.json`, Number(env.PROFILE_MANIFEST_CACHE_SECONDS || PROFILE_MANIFEST_CACHE_SECONDS),
+    bucket, pin ? `${prefix}/generations/${pin}/manifest.json` : `${prefix}/current.json`,
+    Number(env.PROFILE_MANIFEST_CACHE_SECONDS || PROFILE_MANIFEST_CACHE_SECONDS),
   );
   validateProfileManifest(manifest);
   const dayType = phase11DayType(atMs, holidays);
@@ -532,17 +538,23 @@ export async function readProfilesFromR2(bucket, keys, atMs, holidays = new Set(
   if (!/^profiles\/(weekday|saturday|holiday)\/\d{4}\.json$/.test(shard.path)) {
     throw new Error(`invalid Phase 11 shard path: ${shard.path}`);
   }
+  const packed = manifest.format === PACKED_PROFILE_FORMAT;
+  const storage = shard.read_storage || shard.storage;
+  if (packed) validatePackedStorage(storage);
   const payload = await readCachedR2Json(
     bucket,
-    `${prefix}/generations/${manifest.generation}/${shard.path}`,
+    packed ? `${prefix}/${storage.key}` : `${prefix}/generations/${manifest.generation}/${shard.path}`,
     Number(env.PROFILE_SHARD_CACHE_SECONDS || PROFILE_SHARD_CACHE_SECONDS),
+    packed ? storage : null,
   );
-  if (payload?.version !== 1 || payload.generated_at !== manifest.generated_at || !Array.isArray(payload.profiles)) {
+  if (packed) validatePackedPayload(payload, 'profiles', shard.count);
+  else if (payload?.version !== 1 || payload.generated_at !== manifest.generated_at || !Array.isArray(payload.profiles)) {
     throw new Error("invalid Phase 11 profile shard");
   }
   const wanted = new Set(keys);
   return {
-    profiles: new Map(payload.profiles.filter((row) => wanted.has(row.segment_key)).map((row) => [row.segment_key, row])),
+    profiles: new Map((packed ? unpackProfileRows(payload, manifest.generated_at, wanted)
+      : payload.profiles.filter((row) => wanted.has(row.segment_key))).map((row) => [row.segment_key, row])),
     manifest,
   };
 }
@@ -553,16 +565,21 @@ async function readWeatherProfilesFromR2(bucket, db, segments, atMs, manifest, e
   validateProfileManifest(manifest);
   if (manifest.weather?.path !== "weather-profiles.json") throw new Error("invalid Phase 11 weather path");
   const prefix = normalizedProfilePrefix(env.PROFILE_JSON_PREFIX || PROFILE_JSON_PREFIX);
+  const packed = manifest.format === PACKED_PROFILE_FORMAT;
+  const storage = manifest.weather.read_storage || manifest.weather.storage;
+  if (packed) validatePackedStorage(storage);
   const payload = await readCachedR2Json(
     bucket,
-    `${prefix}/generations/${manifest.generation}/${manifest.weather.path}`,
+    packed ? `${prefix}/${storage.key}` : `${prefix}/generations/${manifest.generation}/${manifest.weather.path}`,
     Number(env.PROFILE_SHARD_CACHE_SECONDS || PROFILE_SHARD_CACHE_SECONDS),
+    packed ? storage : null,
   );
-  if (payload?.version !== 1 || payload.generated_at !== manifest.generated_at || !Array.isArray(payload.weather_profiles)) {
+  if (packed) validatePackedPayload(payload, 'weather_profiles', manifest.weather.count);
+  else if (payload?.version !== 1 || payload.generated_at !== manifest.generated_at || !Array.isArray(payload.weather_profiles)) {
     throw new Error("invalid Phase 11 weather profiles");
   }
   const candidates = new Map();
-  for (const row of payload.weather_profiles) {
+  for (const row of packed ? unpackProfileRows(payload, manifest.generated_at) : payload.weather_profiles) {
     if (row.weather_class !== current.weather_class || row.temperature_band !== current.temperature_band) continue;
     candidates.set(`${row.route_id}|${row.direction_id}`, row);
   }
@@ -577,8 +594,9 @@ async function readWeatherProfilesFromR2(bucket, db, segments, atMs, manifest, e
 }
 
 function validateProfileManifest(manifest) {
-  if (manifest?.version !== 1 || manifest.format !== "phase11-profile-shards"
-    || !/^[0-9A-Za-z._-]+$/.test(manifest.generation || "")
+  if (!((manifest?.version === 1 && manifest.format === 'phase11-profile-shards')
+    || (manifest?.version === 2 && manifest.format === PACKED_PROFILE_FORMAT))
+    || !/^[0-9A-Za-z][0-9A-Za-z._-]*$/.test(manifest.generation || "")
     || !Number.isFinite(Date.parse(manifest.generated_at || ""))
     || !Array.isArray(manifest.shards)) {
     throw new Error("invalid Phase 11 current manifest");
@@ -591,7 +609,7 @@ function normalizedProfilePrefix(value) {
   return prefix;
 }
 
-async function readCachedR2Json(bucket, key, cacheSeconds) {
+async function readCachedR2Json(bucket, key, cacheSeconds, storage = null) {
   const ttlSeconds = Math.max(1, Number(cacheSeconds) || 1);
   let profileJsonMemoryCache = profileJsonMemoryCaches.get(bucket);
   if (!profileJsonMemoryCache) {
@@ -605,7 +623,9 @@ async function readCachedR2Json(bucket, key, cacheSeconds) {
     return memoryCached.value;
   }
   if (memoryCached) profileJsonMemoryCache.delete(key);
-  const cache = globalThis.caches?.default || null;
+  // Gzip is an archive/compatibility path, not the production hot path. Keep
+  // its decoded tables in the bounded isolate LRU without another serialization.
+  const cache = storage?.encoding === 'gzip' ? null : globalThis.caches?.default || null;
   const cacheKey = new Request(`https://phase11.invalid/profile-json/${encodeURIComponent(key)}`);
   if (cache) {
     try {
@@ -619,11 +639,12 @@ async function readCachedR2Json(bucket, key, cacheSeconds) {
   }
   const object = await bucket.get(key);
   if (!object) throw new Error(`R2 object not found: ${key}`);
-  const value = await object.json();
+  let verifiedBytes;
+  const value = storage ? await decodePackedProfileObject(object, storage, bytes => { verifiedBytes = bytes; }) : await object.json();
   rememberProfileJson(profileJsonMemoryCache, key, value, ttlSeconds);
   if (cache) {
     try {
-      await cache.put(cacheKey, new Response(JSON.stringify(value), {
+      await cache.put(cacheKey, new Response(verifiedBytes || JSON.stringify(value), {
         headers: { "Content-Type": "application/json", "Cache-Control": `public, max-age=${ttlSeconds}` },
       }));
     } catch {}
